@@ -1,0 +1,10 @@
+{
+  "name": "pixelband",
+  "version": "0.1.0",
+  "description": "Turn any image into pixel art that lives above your Claude Code prompt and reacts while Claude works.",
+  "author": { "name": "Furqan Khan" },
+  "homepage": "https://github.com/furqan-khan07/pixelband",
+  "repository": "https://github.com/furqan-khan07/pixelband",
+  "license": "MIT",
+  "keywords": ["mod", "pixel-art", "banner", "customization", "function-hooks"]
+}

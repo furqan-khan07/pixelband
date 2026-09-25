@@ -1,0 +1,4 @@
+.DS_Store
+node_modules/
+# written by /plugin-types inside Claude Code; regenerate rather than commit
+.claude/types/
