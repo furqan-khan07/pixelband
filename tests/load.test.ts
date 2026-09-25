@@ -7,8 +7,9 @@ tier('user')
 /** A pretend filesystem and PATH: `tool` decides what running a program does. */
 function fakeIo(files: Record<string, string>, tool?: (argv: string[]) => number) {
   const runs: string[][] = []
+  const reads: string[] = []
   const io: Io = {
-    readBase64: async (p) => { if (!(p in files)) throw new Error('ENOENT'); return { base64: files[p] } },
+    readBase64: async (p) => { reads.push(p); if (!(p in files)) throw new Error('ENOENT'); return { base64: files[p] } },
     tmpdir: async () => '/tmp/',
     run: async (argv) => {
       runs.push(argv)
@@ -17,7 +18,7 @@ function fakeIo(files: Record<string, string>, tool?: (argv: string[]) => number
       return { exitCode: code, stdout: '', stderr: '' }
     },
   }
-  return { io, runs }
+  return { io, runs, reads }
 }
 
 const JPEG = btoa(String.fromCharCode(0xff, 0xd8, 0xff, 0xe0, 0, 16, 74, 70, 73, 70))
@@ -37,10 +38,11 @@ describe('load', () => {
     expect(runs).toEqual([])
   })
 
-  test('a JPEG goes through sips, and the temp file is cleaned up', async () => {
-    const { io, runs } = fakeIo({ '/photo.jpg': JPEG }, (argv) => (argv[0] === 'sips' ? 0 : 127))
+  test('a JPEG goes through sips without being read into the mod, and the temp file is cleaned up', async () => {
+    const { io, runs, reads } = fakeIo({ '/photo.jpg': JPEG }, (argv) => (argv[0] === 'sips' ? 0 : 127))
     const r = await loadImage(io, '/photo.jpg')
     expect(r.via).toBe('sips')
+    expect(reads.includes('/photo.jpg')).toBe(false)
     expect([r.image.width, r.image.height]).toEqual([IMAGES.sips_bmp.width, IMAGES.sips_bmp.height])
     expect(runs[0].slice(0, 5)).toEqual(['sips', '-s', 'format', 'bmp', '--resampleHeightWidthMax'])
     expect(runs[0][runs[0].length - 1].startsWith('/tmp/pixelband-')).toBe(true)
@@ -55,6 +57,11 @@ describe('load', () => {
   test('a missing file says so', async () => {
     const { io } = fakeIo({})
     await expect(loadImage(io, '/nope.png')).rejects.toThrow(/couldn't read \/nope.png/)
+  })
+
+  test('a PNG saved with a .jpg name still loads when no tool is around', async () => {
+    const { io } = fakeIo({ '/odd.jpg': IMAGES.rgb8.png! })
+    expect((await loadImage(io, '/odd.jpg')).via).toBe('png')
   })
 
   test('an interlaced PNG falls back to the OS tool', async () => {

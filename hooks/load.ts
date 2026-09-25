@@ -71,8 +71,15 @@ async function viaTool(io: Io, path: string): Promise<Loaded> {
   throw new Error("I can read PNG and BMP myself; for other formats I need macOS's sips or ImageMagick, and neither worked. Try a PNG?")
 }
 
+/** Photo formats go straight to the OS tool: no point pulling a 20 MB HEIC through the mod. */
+const TOOL_FIRST = /\.(jpe?g|heic|heif|webp|gif|tiff?|avif|icns|psd)$/i
+
 /** Load any image we can into RGBA. */
 export async function loadImage(io: Io, path: string): Promise<Loaded> {
+  let toolError: unknown = null
+  if (TOOL_FIRST.test(path)) {
+    try { return await viaTool(io, path) } catch (err) { toolError = err } // maybe it's a mislabelled PNG
+  }
   let bytes: Uint8Array
   try {
     bytes = await readBytes(io, path)
@@ -90,5 +97,6 @@ export async function loadImage(io: Io, path: string): Promise<Loaded> {
   if (isBmp(bytes)) {
     try { return { image: decodeBmp(bytes), via: 'bmp' } } catch { /* odd BMP: try the tool */ }
   }
+  if (toolError) throw toolError
   return viaTool(io, path)
 }
