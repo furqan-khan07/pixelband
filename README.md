@@ -37,8 +37,12 @@ Once mods ship properly, it'll install like any other plugin.
 |---|---|
 | `/pixelband set <image>` | use an image: PNG, JPEG, HEIC (iPhone photos), WebP, GIF and more |
 | `/pixelband set <image> --here` | use it for **this project only**, so each repo gets its own banner |
-| `/pixelband size <rows>` | how tall the band is, 2 to 16 rows (two pixels per row) |
-| `/pixelband colors <n>` | palette size, 2 to 32. Fewer colours reads more like pixel art |
+| `/pixelband style <name>` | `original`, `gameboy`, `pico8`, `mono` or `sepia` |
+| `/pixelband move <up\|down\|left\|right> [steps]` | aim the crop at the part of the picture you want |
+| `/pixelband zoom <in\|out\|reset>` | zoom the crop in, up to 4x |
+| `/pixelband layout <auto\|banner\|fit>` | `banner` fills the whole width with a crop; `fit` shows the whole image, centred. `auto` picks `fit` for logos and sprites with see-through backgrounds |
+| `/pixelband size <rows>` | how tall the band is, 2 to 24 rows (two pixels per row) |
+| `/pixelband colors <n>` | palette size for the `original` style, 2 to 32. Fewer colours reads more like pixel art |
 | `/pixelband on` / `off` | show or hide it |
 | `/pixelband clear [--here]` | forget the image |
 | `/pixelband demo <mood>` | play `working`, `done`, `error` or `intro` on demand (good for screenshots) |
@@ -46,9 +50,11 @@ Once mods ship properly, it'll install like any other plugin.
 ## Why pixel art and not the actual photo?
 
 Because terminals are bad at photos. Real pixels only show up in a couple of terminals (Kitty and
-Ghostty); everywhere else, a band a few rows tall is roughly 40×12 pixels, and a photo shrunk that
-far just looks like a smudge. So pixelband leans into it on purpose: it shrinks the image, gives
-the colours a bit of punch, and cuts it down to a small palette, so every block looks deliberate.
+Ghostty); everywhere else, even a full-width band is only about 100×24 pixels, and a photo shrunk that far
+just looks like a smudge. So pixelband leans into it on purpose: it crops the image to the band's
+shape (you choose which part with `move` and `zoom`), gives the colours a bit of punch, and cuts
+it down to a small palette, so every block looks deliberate. The retro styles go further and map
+the image onto a fixed palette with ordered dithering, the way a Game Boy or PICO-8 game would.
 
 Each terminal cell shows two stacked pixels (the `▀` character in one colour over a background in
 another), and see-through parts of a PNG let your terminal's background show through, so logos

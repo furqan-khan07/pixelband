@@ -3,8 +3,12 @@
  *
  *   /pixelband set <image> [--here]   use an image (drag a file into the terminal for the path);
  *                                     --here makes it this project's banner only
- *   /pixelband size <rows>            how tall the band is (2-16 rows, two pixels per row)
- *   /pixelband colors <n>             palette size (2-32); fewer colours reads more "pixel art"
+ *   /pixelband style <name>           original, gameboy, pico8, mono or sepia
+ *   /pixelband layout <mode>          banner (full width, cropped), fit (whole image), or auto
+ *   /pixelband move <dir> [n]         aim the banner's crop: up, down, left, right
+ *   /pixelband zoom <in|out|reset>    crop tighter or wider
+ *   /pixelband size <rows>            how tall the band is (2-24 rows, two pixels per row)
+ *   /pixelband colors <n>             palette size (2-32) for the original and sepia styles
  *   /pixelband on | off               show or hide it
  *   /pixelband clear [--here]         forget the image
  *   /pixelband demo <mood>            play working, done, error or intro (handy for screenshots)
@@ -16,17 +20,25 @@
 import type { Register } from 'claude-code'
 import { DURATION, FRAME_MS, frame, isOneShot, type Mood } from './effects'
 import { cleanPath, loadImage, type Io } from './load'
-import { fit, pixelate, shrinkToFit, type Art } from './pixelate'
+import { cropRect, DEFAULT_VIEW, downscale, downscaleRegion, fit, shrinkToFit, transparency, TRANSPARENT, type Art, type View } from './pixelate'
 import type { Rgba } from './png'
 import { cellsFor, rowsFor } from './raster'
+import { STYLES, stylize, type Style } from './styles'
 
-interface Config { rows: number; colors: number; enabled: boolean }
-interface StoredImage { w: number; h: number; rgba: string; name: string }
+type Layout = 'auto' | 'banner' | 'fit'
+interface Config { rows: number; colors: number; enabled: boolean; style: Style; layout: Layout }
+/** The image as kept in the store: RGB when it's fully opaque (a quarter smaller), RGBA otherwise. */
+interface StoredImage { w: number; h: number; rgb?: string; rgba?: string; name: string }
 
-const DEFAULTS: Config = { rows: 6, colors: 16, enabled: true }
-/** Longest side of the copy we keep in the store; resizing later re-pixelates from this. */
-const STORED_MAX_SIDE = 128
-const MAX_COLS = 120
+const DEFAULTS: Config = { rows: 12, colors: 16, enabled: true, style: 'original', layout: 'auto' }
+/** Longest side of the copy we keep; wide enough for a full-width banner. The store caps at 4 MiB total. */
+const STORED_MAX_SIDE = 320
+const MAX_COLS = 250
+/** Upper bound on cells per drawing, so a huge terminal can't produce an unreasonably big frame. */
+const MAX_CELLS = 6000
+/** Images at least this see-through (logos, sprites) default to showing whole instead of cropped. */
+const FIT_IF_TRANSPARENT = 0.15
+const MOVE_STEP = 0.08
 const KEY = 'art'
 
 const clampInt = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, Math.round(v)))
@@ -51,6 +63,10 @@ export const register: Register = (on) => {
   let image: Rgba | null = null
   let imageName = ''
   let imageScope: 'project' | 'global' | null = null
+  let imageClear = 0
+  let view: View = { ...DEFAULT_VIEW }
+  /** Whether the saved image has been looked up yet, so the "no image" hint doesn't flash at startup. */
+  let ready = false
 
   let art: Art | null = null
   let artKey = ''
@@ -64,9 +80,24 @@ export const register: Register = (on) => {
 
   const projectKey = () => `image:${root}`
 
+  const imageKeyFor = (scope: 'project' | 'global') => (scope === 'project' ? projectKey() : 'image:global')
+  const viewKey = () => `view:${imageScope === 'project' ? root : 'global'}`
+
+  function encodeStored(img: Rgba, name: string): StoredImage {
+    if (transparency(img) > 0) return { w: img.width, h: img.height, rgba: img.data.toBase64(), name }
+    const rgb = new Uint8Array(img.width * img.height * 3)
+    for (let i = 0, j = 0; i < img.data.length; i += 4, j += 3) { rgb[j] = img.data[i]; rgb[j + 1] = img.data[i + 1]; rgb[j + 2] = img.data[i + 2] }
+    return { w: img.width, h: img.height, rgb: rgb.toBase64(), name }
+  }
+
   function decodeStored(s: StoredImage | undefined): Rgba | null {
-    if (!s || typeof s.rgba !== 'string') return null
-    return { width: s.w, height: s.h, data: Uint8Array.fromBase64(s.rgba) }
+    if (!s) return null
+    if (typeof s.rgba === 'string') return { width: s.w, height: s.h, data: Uint8Array.fromBase64(s.rgba) }
+    if (typeof s.rgb !== 'string') return null
+    const rgb = Uint8Array.fromBase64(s.rgb)
+    const data = new Uint8Array(s.w * s.h * 4)
+    for (let i = 0, j = 0; j < rgb.length; i += 4, j += 3) { data[i] = rgb[j]; data[i + 1] = rgb[j + 1]; data[i + 2] = rgb[j + 2]; data[i + 3] = 255 }
+    return { width: s.w, height: s.h, data }
   }
 
   async function loadState() {
@@ -79,18 +110,37 @@ export const register: Register = (on) => {
     image = decodeStored(pick)
     imageName = pick?.name ?? ''
     imageScope = project ? 'project' : global ? 'global' : null
+    imageClear = image ? transparency(image) : 0
+    const v = imageScope ? ((await host.get(viewKey())) as Partial<View> | undefined) : undefined
+    view = { ...DEFAULT_VIEW, ...(v ?? {}) }
     art = null
   }
 
   const redraw = () => { try { host?.invalidate() } catch { /* not mounted yet */ } }
 
-  /** The art for the band's current size, re-pixelated only when size or palette changes. */
-  function artFor(rows: number, maxCols: number): Art | null {
+  const layoutOf = (): 'banner' | 'fit' =>
+    config.layout === 'auto' ? (imageClear >= FIT_IF_TRANSPARENT ? 'fit' : 'banner') : config.layout
+
+  /**
+   * The art for a band `cols` wide and `rows` tall, re-made only when something that shapes it
+   * changes. A banner fills the whole width with a crop of the image; fit shows all of it, centred.
+   */
+  function artFor(rows: number, cols: number): Art | null {
     if (!image) return null
-    const { w, h } = fit(image.width, image.height, rows, maxCols)
-    const key = `${w}x${h}x${config.colors}`
+    const layout = layoutOf()
+    const key = `${layout}|${cols}x${rows}|${config.style}|${config.colors}|${view.focusX},${view.focusY},${view.zoom}`
     if (art && artKey === key) return art
-    art = pixelate(image, w, h, config.colors)
+    const w = cols, h = rows * 2
+    if (layout === 'banner') {
+      art = stylize(downscaleRegion(image, cropRect(image.width, image.height, w / h, view), w, h), config.style, config.colors)
+    } else {
+      const f = fit(image.width, image.height, rows, cols)
+      const inner = stylize(downscale(image, f.w, f.h), config.style, config.colors)
+      const px = new Uint32Array(w * f.h).fill(TRANSPARENT)
+      const left = Math.floor((w - f.w) / 2)
+      for (let y = 0; y < f.h; y++) px.set(inner.px.subarray(y * f.w, (y + 1) * f.w), y * w + left)
+      art = { w, h: f.h, px }
+    }
     artKey = key
     return art
   }
@@ -138,10 +188,12 @@ export const register: Register = (on) => {
     root = (e as any).cwd ?? ''
     try { root = (await $.session.root()) || root } catch { /* not in a repo: cwd will do */ }
     await loadState()
+    ready = true
+    redraw()
     await $.command.register({
       name: 'pixelband',
-      description: 'Pixel art above your prompt: set <image> [--here], size <rows>, colors <n>, on, off, clear, demo <mood>',
-      argumentHint: 'set <image> | size <rows> | colors <n> | on | off | clear | demo <mood>',
+      description: 'Pixel art above your prompt: set <image> [--here], style, layout, move, zoom, size, colors, on, off, clear, demo',
+      argumentHint: 'set <image> | style <name> | layout <mode> | move <dir> | zoom <in|out> | size <rows> | on | off',
     })
     return next(e)
   })
@@ -166,11 +218,13 @@ export const register: Register = (on) => {
     const { Box, Text, Raster } = $.ui.resolve(e) as any
     if (!image) {
       band = null
+      if (!ready) return next(e)
       return h(Text, { dimColor: true }, 'pixelband · /pixelband set <path to an image> to put pixel art here')
     }
-    const rows = Math.min(config.rows, props.maxRows ?? config.rows)
+    const cols = Math.max(1, Math.min(props.bodyColumns ?? 80, MAX_COLS))
+    const rows = Math.min(config.rows, props.maxRows ?? config.rows, Math.floor(MAX_CELLS / cols))
     if (rows < 1) return next(e)
-    const a = artFor(rows, Math.min(props.bodyColumns ?? MAX_COLS, MAX_COLS))
+    const a = artFor(rows, cols)
     if (!a) return next(e)
 
     // Catch up if a turn event was missed.
@@ -195,6 +249,7 @@ export const register: Register = (on) => {
     const arg = tail.replace(/(^|\s)--here$/, '').trim()
 
     const save = async () => { await $.store.set('config', config); art = null; redraw() }
+    const saveView = async () => { await $.store.set(viewKey(), view); art = null; redraw() }
 
     switch ((sub || '').toLowerCase()) {
       case 'set': {
@@ -204,9 +259,12 @@ export const register: Register = (on) => {
         try { loaded = await loadImage(io, path) } catch (err: any) { return { text: `${err?.message ?? err}` } }
         const kept = shrinkToFit(loaded.image, STORED_MAX_SIDE)
         const name = path.split('/').pop() || path
-        const stored: StoredImage = { w: kept.width, h: kept.height, rgba: kept.data.toBase64(), name }
-        await $.store.set(here ? projectKey() : 'image:global', stored)
-        image = kept; imageName = name; imageScope = here ? 'project' : 'global'
+        const scope = here ? 'project' : 'global'
+        const put = (await $.store.set(imageKeyFor(scope), encodeStored(kept, name))) as { deny?: string } | undefined
+        if (put && put.deny) return { text: `couldn't save it (${put.deny}). Try /pixelband clear on banners you no longer use.` }
+        image = kept; imageName = name; imageScope = scope; imageClear = transparency(kept)
+        view = { ...DEFAULT_VIEW }
+        await $.store.set(viewKey(), view)
         art = null
         if (!config.enabled) { config.enabled = true; await $.store.set('config', config) }
         redraw()
@@ -215,9 +273,38 @@ export const register: Register = (on) => {
       }
       case 'size': {
         const n = Number(arg)
-        if (!Number.isFinite(n)) return { text: 'Usage: /pixelband size <rows>, from 2 to 16.' }
-        config.rows = clampInt(n, 2, 16); await save()
-        return { text: `${config.rows} rows tall (${config.rows * 2} pixels).` }
+        if (!Number.isFinite(n)) return { text: 'Usage: /pixelband size <rows>, from 2 to 24.' }
+        config.rows = clampInt(n, 2, 24); await save()
+        return { text: `${config.rows} rows tall (${config.rows * 2} pixels), as much as the terminal allows.` }
+      }
+      case 'style': {
+        const name = arg.toLowerCase() as Style
+        if (!STYLES.includes(name)) return { text: `Usage: /pixelband style ${STYLES.join('|')}` }
+        config.style = name; await save()
+        return { text: `style: ${name}.` }
+      }
+      case 'layout': {
+        const mode = arg.toLowerCase() as Layout
+        if (!['auto', 'banner', 'fit'].includes(mode)) return { text: 'Usage: /pixelband layout banner|fit|auto' }
+        config.layout = mode; await save()
+        return { text: `layout: ${mode}${mode === 'auto' ? ` (${layoutOf()} for this image)` : ''}.` }
+      }
+      case 'move': {
+        const [dir, count] = arg.toLowerCase().split(/\s+/)
+        const n = Math.max(1, Math.min(10, Number(count) || 1)) * MOVE_STEP
+        const d = ({ up: [0, -n], down: [0, n], left: [-n, 0], right: [n, 0] } as Record<string, number[]>)[dir]
+        if (!d) return { text: 'Usage: /pixelband move up|down|left|right [steps]' }
+        view = { ...view, focusX: Math.min(1, Math.max(0, view.focusX + d[0])), focusY: Math.min(1, Math.max(0, view.focusY + d[1])) }
+        await saveView()
+        return { text: `crop centred at ${Math.round(view.focusX * 100)}% across, ${Math.round(view.focusY * 100)}% down.` }
+      }
+      case 'zoom': {
+        const how = arg.toLowerCase()
+        if (!['in', 'out', 'reset'].includes(how)) return { text: 'Usage: /pixelband zoom in|out|reset' }
+        const zoom = how === 'reset' ? 1 : Math.min(4, Math.max(1, view.zoom * (how === 'in' ? 1.25 : 0.8)))
+        view = how === 'reset' ? { ...DEFAULT_VIEW } : { ...view, zoom: Math.round(zoom * 100) / 100 }
+        await saveView()
+        return { text: `zoom ${view.zoom}x.` }
       }
       case 'colors':
       case 'colours': {
@@ -247,9 +334,9 @@ export const register: Register = (on) => {
       }
       default: {
         const status = image
-          ? `showing ${imageName} (${imageScope === 'project' ? 'this project' : 'global'}), ${config.rows} rows, ${config.colors} colours, ${config.enabled ? 'on' : 'off'}`
+          ? `showing ${imageName} (${imageScope === 'project' ? 'this project' : 'global'}), ${layoutOf()}, ${config.style}, ${config.rows} rows, ${config.enabled ? 'on' : 'off'}`
           : 'no image yet'
-        return { text: `${status}.\nCommands: set <image> [--here] · size <rows> · colors <n> · on · off · clear [--here] · demo <working|done|error|intro>` }
+        return { text: `${status}.\nCommands: set <image> [--here] · style <${STYLES.join('|')}> · layout <banner|fit|auto> · move <up|down|left|right> · zoom <in|out|reset> · size <rows> · colors <n> · on · off · clear [--here] · demo <working|done|error|intro>` }
       }
     }
   })
