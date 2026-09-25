@@ -1,8 +1,10 @@
 /**
  * pixelband: pixel art above the Claude Code prompt that reacts while Claude works.
  *
+ *   /pixelband                        open the menu: pick an image or scene, style, size, crop
  *   /pixelband set <image> [--here]   use an image (drag a file into the terminal for the path);
  *                                     --here makes it this project's banner only
+ *   /pixelband scene <name> [--here]  an animated scene instead: city, space, aurora or fire
  *   /pixelband style <name>           original, gameboy, pico8, mono or sepia
  *   /pixelband layout <mode>          banner (full width, cropped), fit (whole image), or auto
  *   /pixelband move <dir> [n]         aim the banner's crop: up, down, left, right
@@ -14,8 +16,9 @@
  *   /pixelband demo <mood>            play working, done, error or intro (handy for screenshots)
  *
  * How it hangs together: the band is drawn by hooking `ui.render` for `AbovePrompt` with one Raster
- * element. Turn events set a mood; while a mood is animating, a clock timer asks effects.ts for the
- * next frame and swaps it into the Raster with `$.ui.blit`, so nothing else redraws.
+ * element. Turn events set a mood; while something is animating (a mood, or a scene), a clock timer
+ * builds the next frame and swaps it into the Raster with `$.ui.blit`, so nothing else redraws. The
+ * menu is a pane (`ui.render` for `Pane`) whose controls call the same actions as the commands.
  */
 import type { Register } from 'claude-code'
 import { DURATION, FRAME_MS, frame, isOneShot, type Mood } from './effects'
@@ -23,14 +26,23 @@ import { cleanPath, loadImage, type Io } from './load'
 import { cropRect, DEFAULT_VIEW, downscale, downscaleRegion, fit, shrinkToFit, transparency, TRANSPARENT, type Art, type View } from './pixelate'
 import type { Rgba } from './png'
 import { cellsFor, rowsFor } from './raster'
+import { isScene, makeScene, SCENES, type Renderer, type SceneName } from './scenes'
 import { STYLES, stylize, type Style } from './styles'
 
 type Layout = 'auto' | 'banner' | 'fit'
-interface Config { rows: number; colors: number; enabled: boolean; style: Style; layout: Layout }
-/** The image as kept in the store: RGB when it's fully opaque (a quarter smaller), RGBA otherwise. */
-interface StoredImage { w: number; h: number; rgb?: string; rgba?: string; name: string }
+type Scope = 'project' | 'global'
+interface Config { rows: number; colors: number; enabled: boolean; style: Style; layout: Layout; animate: boolean }
+/**
+ * What a scope's slot in the store holds: the image (RGB when fully opaque, a quarter smaller;
+ * RGBA otherwise) and/or a scene. A scene wins while set, and keeps the image for switching back.
+ */
+interface Stored { w?: number; h?: number; rgb?: string; rgba?: string; name?: string; scene?: string }
 
-const DEFAULTS: Config = { rows: 12, colors: 16, enabled: true, style: 'original', layout: 'auto' }
+type Source =
+  | { kind: 'image'; image: Rgba; name: string; clear: number }
+  | { kind: 'scene'; scene: SceneName }
+
+const DEFAULTS: Config = { rows: 12, colors: 16, enabled: true, style: 'original', layout: 'auto', animate: true }
 /** Longest side of the copy we keep; wide enough for a full-width banner. The store caps at 4 MiB total. */
 const STORED_MAX_SIDE = 320
 const MAX_COLS = 250
@@ -40,13 +52,23 @@ const MAX_CELLS = 6000
 const FIT_IF_TRANSPARENT = 0.15
 const MOVE_STEP = 0.08
 const KEY = 'art'
+const MENU = 'pixelband'
+const IMAGE_FILE = /\.(png|jpe?g|heic|heif|webp|gif|bmp|tiff?|avif)$/i
+const RECENT_DIRS = ['Downloads', 'Desktop', 'Pictures']
+
+export const SCENE_LABELS: Record<SceneName, string> = {
+  city: 'rain on a city at night',
+  space: 'stars and a ringed planet',
+  aurora: 'northern lights',
+  fire: 'a wall of fire',
+}
 
 const clampInt = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, Math.round(v)))
 
 /**
- * The engine calls the band needs outside a hook's own `$` (the animation timer runs later).
- * A mod may not keep `$` itself, so session.start captures each call as a small function, the way
- * Anthropic's own diff mod does.
+ * The engine calls needed outside a hook's own `$`: the animation timer and the menu's buttons run
+ * later. A mod may not keep `$` itself, so session.start captures each call as a small function,
+ * the way Anthropic's own diff mod does.
  */
 interface Host {
   every: (ms: number, fn: () => void) => { cancel: () => void }
@@ -54,44 +76,61 @@ interface Host {
   blit: (args: { requestId: string; key: string; cells: string; columns: number; rows: number }) => unknown
   invalidate: () => unknown
   get: (key: string) => Promise<unknown>
+  set: (key: string, value: unknown) => Promise<unknown>
+  del: (key: string) => Promise<unknown>
+  home: () => Promise<unknown>
+  list: (path: string) => Promise<unknown>
+  stat: (path: string) => Promise<unknown>
+  open: () => Promise<unknown>
+  close: () => Promise<unknown>
+  io: Io
 }
 
 export const register: Register = (on) => {
   let host: Host | null = null
   let root = ''
   let config: Config = { ...DEFAULTS }
-  let image: Rgba | null = null
-  let imageName = ''
-  let imageScope: 'project' | 'global' | null = null
-  let imageClear = 0
+  let source: Source | null = null
+  let scope: Scope | null = null
+  let imageName = '' // the image kept in the slot, even while a scene shows
   let view: View = { ...DEFAULT_VIEW }
-  /** Whether the saved image has been looked up yet, so the "no image" hint doesn't flash at startup. */
+  /** Whether the saved state has been looked up yet, so the "no image" hint doesn't flash at startup. */
   let ready = false
 
   let art: Art | null = null
   let artKey = ''
-  /** Where the Raster is mounted, so the timer can blit frames into it. */
-  let band: { requestId: string; columns: number; rows: number } | null = null
+  let renderer: Renderer | null = null
+  let rendererKey = ''
+  let sceneCache: { key: string; art: Art } | null = null
+  /** Where the Raster is mounted, so the timer can blit frames into it. `want` is the size asked for. */
+  let band: { requestId: string; columns: number; rows: number; want: { rows: number; cols: number } } | null = null
 
   let mood: Mood = 'idle'
   let ticks = 0
   let working = false
   let timer: { cancel: () => void } | null = null
+  let sceneT = 0
+  let energy = 0
+
+  // The menu's own state.
+  let note = ''
+  let recent: { name: string; path: string }[] = []
+  let snapshot: { config: Config; slots: [string, unknown][] } | null = null
 
   const projectKey = () => `image:${root}`
+  const slotKey = (s: Scope) => (s === 'project' ? projectKey() : 'image:global')
+  const viewKeyFor = (s: Scope) => `view:${s === 'project' ? root : 'global'}`
+  const here = (): Scope => scope ?? 'global'
 
-  const imageKeyFor = (scope: 'project' | 'global') => (scope === 'project' ? projectKey() : 'image:global')
-  const viewKey = () => `view:${imageScope === 'project' ? root : 'global'}`
-
-  function encodeStored(img: Rgba, name: string): StoredImage {
+  function encodeImage(img: Rgba, name: string): Stored {
     if (transparency(img) > 0) return { w: img.width, h: img.height, rgba: img.data.toBase64(), name }
     const rgb = new Uint8Array(img.width * img.height * 3)
     for (let i = 0, j = 0; i < img.data.length; i += 4, j += 3) { rgb[j] = img.data[i]; rgb[j + 1] = img.data[i + 1]; rgb[j + 2] = img.data[i + 2] }
     return { w: img.width, h: img.height, rgb: rgb.toBase64(), name }
   }
 
-  function decodeStored(s: StoredImage | undefined): Rgba | null {
-    if (!s) return null
+  function decodeImage(s: Stored | undefined): Rgba | null {
+    if (!s || typeof s.w !== 'number' || typeof s.h !== 'number') return null
     if (typeof s.rgba === 'string') return { width: s.w, height: s.h, data: Uint8Array.fromBase64(s.rgba) }
     if (typeof s.rgb !== 'string') return null
     const rgb = Uint8Array.fromBase64(s.rgb)
@@ -104,31 +143,37 @@ export const register: Register = (on) => {
     if (!host) return
     const c = (await host.get('config')) as Partial<Config> | undefined
     config = { ...DEFAULTS, ...(c ?? {}) }
-    const project = (await host.get(projectKey())) as StoredImage | undefined
-    const global = (await host.get('image:global')) as StoredImage | undefined
+    const project = (await host.get(projectKey())) as Stored | undefined
+    const global = (await host.get('image:global')) as Stored | undefined
     const pick = project ?? global
-    image = decodeStored(pick)
-    imageName = pick?.name ?? ''
-    imageScope = project ? 'project' : global ? 'global' : null
-    imageClear = image ? transparency(image) : 0
-    const v = imageScope ? ((await host.get(viewKey())) as Partial<View> | undefined) : undefined
+    scope = project ? 'project' : global ? 'global' : null
+    const image = decodeImage(pick)
+    imageName = image ? pick?.name ?? 'image' : ''
+    if (pick?.scene && isScene(pick.scene)) source = { kind: 'scene', scene: pick.scene }
+    else if (image) source = { kind: 'image', image, name: imageName, clear: transparency(image) }
+    else source = null
+    const v = scope ? ((await host.get(viewKeyFor(scope))) as Partial<View> | undefined) : undefined
     view = { ...DEFAULT_VIEW, ...(v ?? {}) }
     art = null
+    sceneCache = null
   }
 
   const redraw = () => { try { host?.invalidate() } catch { /* not mounted yet */ } }
 
-  const layoutOf = (): 'banner' | 'fit' =>
-    config.layout === 'auto' ? (imageClear >= FIT_IF_TRANSPARENT ? 'fit' : 'banner') : config.layout
+  const layoutOf = (): 'banner' | 'fit' => {
+    if (config.layout !== 'auto') return config.layout
+    return source?.kind === 'image' && source.clear >= FIT_IF_TRANSPARENT ? 'fit' : 'banner'
+  }
 
   /**
-   * The art for a band `cols` wide and `rows` tall, re-made only when something that shapes it
-   * changes. A banner fills the whole width with a crop of the image; fit shows all of it, centred.
+   * The art for an image in a band `cols` wide and `rows` tall, re-made only when something that
+   * shapes it changes. A banner fills the whole width with a crop; fit shows all of it, centred.
    */
-  function artFor(rows: number, cols: number): Art | null {
-    if (!image) return null
+  function imageArt(rows: number, cols: number): Art | null {
+    if (source?.kind !== 'image') return null
+    const image = source.image
     const layout = layoutOf()
-    const key = `${layout}|${cols}x${rows}|${config.style}|${config.colors}|${view.focusX},${view.focusY},${view.zoom}`
+    const key = `${layout}|${cols}x${rows}|${config.style}|${config.colors}|${view.focusX},${view.focusY},${view.zoom}|${source.name}`
     if (art && artKey === key) return art
     const w = cols, h = rows * 2
     if (layout === 'banner') {
@@ -145,9 +190,38 @@ export const register: Register = (on) => {
     return art
   }
 
+  /** This moment's frame of a scene, run through the style if one is picked. */
+  function sceneArt(rows: number, cols: number): Art | null {
+    if (source?.kind !== 'scene') return null
+    const w = cols, h = rows * 2
+    const flash = mood === 'done' ? ticks * FRAME_MS : null
+    const key = `${source.scene}|${w}x${h}|${sceneT}|${flash}|${config.style}|${config.colors}`
+    if (sceneCache?.key === key) return sceneCache.art
+    const rkey = `${source.scene}|${w}x${h}`
+    if (!renderer || rendererKey !== rkey) { renderer = makeScene(source.scene, w, h); rendererKey = rkey }
+    const px = renderer({ t: sceneT, energy, flash })
+    let a: Art = { w, h, px }
+    if (config.style !== 'original') {
+      const data = new Uint8Array(w * h * 4)
+      for (let i = 0; i < px.length; i++) {
+        const c = px[i]
+        if (c === TRANSPARENT) continue
+        data[i * 4] = (c >> 16) & 255; data[i * 4 + 1] = (c >> 8) & 255; data[i * 4 + 2] = c & 255; data[i * 4 + 3] = 255
+      }
+      a = stylize({ width: w, height: h, data }, config.style, config.colors)
+    }
+    sceneCache = { key, art: a }
+    return a
+  }
+
   function currentCells(): string | null {
-    if (!art) return null
-    return cellsFor(art, frame(art, mood, ticks * FRAME_MS))
+    if (!band || !source) return null
+    const { rows, cols } = band.want
+    const a = source.kind === 'image' ? imageArt(rows, cols) : sceneArt(rows, cols)
+    if (!a) return null
+    // Scenes show working and done themselves (heavier rain, lightning); intro and error apply to both.
+    const m = source.kind === 'scene' && (mood === 'working' || mood === 'done') ? 'idle' : mood
+    return cellsFor(a, frame(a, m, ticks * FRAME_MS))
   }
 
   function blit() {
@@ -158,10 +232,22 @@ export const register: Register = (on) => {
       .catch(() => { /* band gone or resized: the next render fixes it */ })
   }
 
+  const animating = () =>
+    mood !== 'idle' || (source?.kind === 'scene' && config.enabled && config.animate && band !== null)
+
   function stopTimer() { timer?.cancel(); timer = null }
+
+  function syncTimer() {
+    if (!animating()) stopTimer()
+    else if (!timer && host) timer = host.every(FRAME_MS, tick)
+  }
 
   function tick() {
     ticks++
+    if (source?.kind === 'scene' && config.animate) {
+      sceneT += FRAME_MS
+      energy += ((working ? 1 : 0) - energy) * 0.1
+    }
     if (isOneShot(mood) && ticks * FRAME_MS >= DURATION[mood]) setMood(working ? 'working' : 'idle')
     else blit()
   }
@@ -169,13 +255,179 @@ export const register: Register = (on) => {
   function setMood(next: Mood) {
     mood = next
     ticks = 0
-    if (next === 'idle') {
-      stopTimer()
-    } else if (!timer && host) {
-      timer = host.every(FRAME_MS, tick)
-    }
+    syncTimer()
     blit()
   }
+
+  // ---------------------------------------------------------------------------------------------
+  // Actions, shared by the commands and the menu. Each returns what to tell the person.
+
+  async function save() { await host?.set('config', config); art = null; sceneCache = null; redraw(); syncTimer() }
+  async function saveView() { if (scope) await host?.set(viewKeyFor(scope), view); art = null; redraw() }
+
+  async function writeSlot(s: Scope, value: Stored): Promise<string | null> {
+    const put = (await host?.set(slotKey(s), value)) as { deny?: string } | undefined
+    return put && put.deny ? put.deny : null
+  }
+
+  async function setImage(input: string, s: Scope): Promise<string> {
+    if (!host) return 'not ready yet.'
+    if (!input.trim()) return 'Usage: /pixelband set <path to an image> [--here]. Tip: drag the file into the terminal.'
+    const path = cleanPath(input, (await host.home()) as string | undefined)
+    let loaded
+    try { loaded = await loadImage(host.io, path) } catch (err: any) { return `${err?.message ?? err}` }
+    const kept = shrinkToFit(loaded.image, STORED_MAX_SIDE)
+    const name = path.split('/').pop() || path
+    const deny = await writeSlot(s, encodeImage(kept, name))
+    if (deny) return `couldn't save it (${deny}). Try /pixelband clear on banners you no longer use.`
+    view = { ...DEFAULT_VIEW }
+    await host.set(viewKeyFor(s), view)
+    await loadState()
+    if (!config.enabled) { config.enabled = true; await host.set('config', config) }
+    redraw()
+    setMood('intro')
+    return `${name} is now ${s === 'project' ? "this project's" : 'your'} banner (${loaded.image.width}x${loaded.image.height}, read via ${loaded.via}).`
+  }
+
+  async function setScene(name: string, s: Scope): Promise<string> {
+    if (!host) return 'not ready yet.'
+    if (!isScene(name)) return `Scenes: ${SCENES.map((n) => `${n} (${SCENE_LABELS[n]})`).join(', ')}. Use /pixelband scene <name>.`
+    const current = ((await host.get(slotKey(s))) as Stored | undefined) ?? {}
+    const deny = await writeSlot(s, { ...current, scene: name })
+    if (deny) return `couldn't save it (${deny}).`
+    await loadState()
+    if (!config.enabled) { config.enabled = true; await host.set('config', config) }
+    renderer = null
+    redraw()
+    setMood('intro')
+    return `showing ${name}: ${SCENE_LABELS[name]}.`
+  }
+
+  /** Back from a scene to the image kept in the same slot. */
+  async function showImage(): Promise<string> {
+    if (!host || !scope) return 'set an image first.'
+    const current = ((await host.get(slotKey(scope))) as Stored | undefined) ?? {}
+    if (!decodeImage(current)) return 'set an image first.'
+    const { scene: _, ...rest } = current
+    await writeSlot(scope, rest)
+    await loadState()
+    redraw()
+    setMood('intro')
+    return `showing ${imageName}.`
+  }
+
+  async function setScope(to: Scope): Promise<string> {
+    if (!host || !scope) return 'set an image or scene first.'
+    if (to === scope) return to === 'project' ? 'already just for this project.' : 'already shown everywhere.'
+    const current = await host.get(slotKey(scope))
+    const deny = await writeSlot(to, current as Stored)
+    if (deny) return `couldn't save it (${deny}).`
+    await host.set(viewKeyFor(to), view)
+    if (to === 'global') { await host.del(projectKey()); await host.del(viewKeyFor('project')) }
+    await loadState()
+    redraw()
+    return to === 'project' ? 'now just for this project; other projects keep theirs.' : 'now shown in every project.'
+  }
+
+  async function setStyle(name: string): Promise<string> {
+    if (!(STYLES as readonly string[]).includes(name)) return `Usage: /pixelband style ${STYLES.join('|')}`
+    config.style = name as Style; await save()
+    return `style: ${name}.`
+  }
+
+  async function setLayout(mode: string): Promise<string> {
+    if (!['auto', 'banner', 'fit'].includes(mode)) return 'Usage: /pixelband layout banner|fit|auto'
+    config.layout = mode as Layout; await save()
+    return `layout: ${mode}${mode === 'auto' ? ` (${layoutOf()} for this image)` : ''}.`
+  }
+
+  async function move(dx: number, dy: number): Promise<string> {
+    view = { ...view, focusX: Math.min(1, Math.max(0, view.focusX + dx)), focusY: Math.min(1, Math.max(0, view.focusY + dy)) }
+    await saveView()
+    return `crop centred at ${Math.round(view.focusX * 100)}% across, ${Math.round(view.focusY * 100)}% down.`
+  }
+
+  async function zoom(how: string): Promise<string> {
+    if (!['in', 'out', 'reset'].includes(how)) return 'Usage: /pixelband zoom in|out|reset'
+    const z = how === 'reset' ? 1 : Math.min(4, Math.max(1, view.zoom * (how === 'in' ? 1.25 : 0.8)))
+    view = how === 'reset' ? { ...DEFAULT_VIEW } : { ...view, zoom: Math.round(z * 100) / 100 }
+    await saveView()
+    return `zoom ${view.zoom}x.`
+  }
+
+  async function setRows(n: number): Promise<string> {
+    config.rows = clampInt(n, 2, 24); await save()
+    return `${config.rows} rows tall (${config.rows * 2} pixels), as much as the terminal allows.`
+  }
+
+  async function setColors(n: number): Promise<string> {
+    config.colors = clampInt(n, 2, 32); await save()
+    return `${config.colors}-colour palette.`
+  }
+
+  async function setEnabled(show: boolean): Promise<string> {
+    config.enabled = show; await save()
+    return show ? 'on.' : 'off.'
+  }
+
+  async function setAnimate(move: boolean): Promise<string> {
+    config.animate = move; await save()
+    return move ? 'scenes animate.' : 'scenes hold still.'
+  }
+
+  // ---------------------------------------------------------------------------------------------
+  // The menu
+
+  /** The few newest images in Downloads, Desktop and Pictures, for one-press picking. */
+  async function findRecent() {
+    if (!host) return
+    const home = String((await host.home()) ?? '').replace(/\/$/, '')
+    if (!home) return
+    const found: { name: string; path: string; mtime: number }[] = []
+    for (const dir of RECENT_DIRS) {
+      let entries: { name: string; kind: string }[] = []
+      try { entries = ((await host.list(`${home}/${dir}`)) as typeof entries) ?? [] } catch { continue }
+      const images = entries.filter((f) => f.kind === 'file' && IMAGE_FILE.test(f.name)).slice(-40)
+      for (const f of images) {
+        const path = `${home}/${dir}/${f.name}`
+        try { found.push({ name: f.name, path, mtime: Number(((await host.stat(path)) as { mtimeMs?: number })?.mtimeMs) || 0 }) } catch { /* gone */ }
+      }
+    }
+    recent = found.sort((a, b) => b.mtime - a.mtime).slice(0, 4).map(({ name, path }) => ({ name, path }))
+    redraw()
+  }
+
+  async function openMenu() {
+    if (!host) return
+    const keys = ['config', 'image:global', projectKey(), viewKeyFor('global'), viewKeyFor('project')]
+    const slots: [string, unknown][] = []
+    for (const k of keys) slots.push([k, await host.get(k)])
+    snapshot = { config: { ...config }, slots }
+    note = ''
+    await host.open()
+    findRecent().catch(() => { /* recent images are a nicety */ })
+  }
+
+  async function revert(): Promise<string> {
+    if (!host || !snapshot) return 'nothing to undo.'
+    for (const [k, v] of snapshot.slots) {
+      if (v === undefined) await host.del(k)
+      else await host.set(k, v)
+    }
+    await loadState()
+    renderer = null
+    redraw()
+    syncTimer()
+    return 'back to how it was when you opened the menu.'
+  }
+
+  /** Run a menu action, then show its message in the menu. */
+  const act = (fn: () => Promise<string>) => () => {
+    fn().then((msg) => { note = msg; redraw() }, (err) => { note = `${err?.message ?? err}`; redraw() })
+  }
+
+  // ---------------------------------------------------------------------------------------------
+  // Hooks
 
   on('session.start', async ($, e, next) => {
     host = {
@@ -184,6 +436,18 @@ export const register: Register = (on) => {
       blit: (args) => $.ui.blit(args),
       invalidate: () => $.ui.invalidate('ui.render'),
       get: (key) => $.store.get(key),
+      set: (key, value) => $.store.set(key, value as any),
+      del: (key) => $.store.delete(key),
+      home: () => $.env.get('HOME'),
+      list: (path) => $.fs.list(path),
+      stat: (path) => $.fs.stat(path),
+      open: () => $.ui.open({ id: MENU, title: 'pixelband', focus: true, closeOnEscape: true, rows: 14 }),
+      close: () => $.ui.close({ id: MENU }),
+      io: {
+        readBase64: (path) => $.fs.read(path, { as: 'bytes' }),
+        tmpdir: () => $.env.get('TMPDIR'),
+        run: (argv) => $.process.run(argv),
+      },
     }
     root = (e as any).cwd ?? ''
     try { root = (await $.session.root()) || root } catch { /* not in a repo: cwd will do */ }
@@ -192,8 +456,8 @@ export const register: Register = (on) => {
     redraw()
     await $.command.register({
       name: 'pixelband',
-      description: 'Pixel art above your prompt: set <image> [--here], style, layout, move, zoom, size, colors, on, off, clear, demo',
-      argumentHint: 'set <image> | style <name> | layout <mode> | move <dir> | zoom <in|out> | size <rows> | on | off',
+      description: 'Pixel art above your prompt. No arguments opens the menu; or set <image>, scene <name>, style, size, on, off',
+      argumentHint: '[set <image> | scene <name> | style <name> | move <dir> | zoom <in|out> | size <rows> | on | off]',
     })
     return next(e)
   })
@@ -214,130 +478,176 @@ export const register: Register = (on) => {
 
   on('ui.render', { component: 'AbovePrompt' }, ($, e, next) => {
     const props = (e as any).props
-    if (!config.enabled || props.hasSurvey) return next(e)
+    if (!config.enabled || props.hasSurvey) { band = null; syncTimer(); return next(e) }
     const { Box, Text, Raster } = $.ui.resolve(e) as any
-    if (!image) {
+    if (!source) {
       band = null
       if (!ready) return next(e)
-      return h(Text, { dimColor: true }, 'pixelband · /pixelband set <path to an image> to put pixel art here')
+      return h(Text, { dimColor: true }, 'pixelband · /pixelband to pick an image or scene')
     }
     const cols = Math.max(1, Math.min(props.bodyColumns ?? 80, MAX_COLS))
     const rows = Math.min(config.rows, props.maxRows ?? config.rows, Math.floor(MAX_CELLS / cols))
-    if (rows < 1) return next(e)
-    const a = artFor(rows, cols)
-    if (!a) return next(e)
+    if (rows < 1) { band = null; syncTimer(); return next(e) }
+
+    // A fit image may be shorter than the band; a banner or scene fills it.
+    const drawnRows = source.kind === 'image' ? rowsFor(imageArt(rows, cols)?.h ?? rows * 2) : rows
+    band = { requestId: (e as any).requestId, columns: cols, rows: drawnRows, want: { rows, cols } }
 
     // Catch up if a turn event was missed.
     if (props.isWorking && mood === 'idle') { working = true; setMood('working') }
     if (!props.isWorking && mood === 'working') { working = false; setMood('idle') }
+    syncTimer()
 
-    band = { requestId: (e as any).requestId, columns: a.w, rows: rowsFor(a.h) }
-    return h(Box, { flexDirection: 'row' },
-      h(Raster, { key: KEY, columns: band.columns, rows: band.rows, cells: currentCells() }))
+    const cells = currentCells()
+    if (!cells) return next(e)
+    return h(Box, { flexDirection: 'row' }, h(Raster, { key: KEY, columns: band.columns, rows: band.rows, cells }))
+  })
+
+  on('ui.render', { component: 'Pane', requestId: MENU }, ($, e, next) => {
+    const { Box, Text, Button, Select, Input } = $.ui.resolve(e) as any
+    const row = (...kids: unknown[]) => h(Box, { flexDirection: 'row', columnGap: 1 }, ...kids)
+    const s = here()
+    const showing = source?.kind === 'scene' ? `scene:${source.scene}` : source ? 'image' : 'none'
+    const options = [
+      ...(imageName ? [{ value: 'image', label: `your image (${imageName})` }] : []),
+      ...SCENES.map((n) => ({ value: `scene:${n}`, label: `${n}: ${SCENE_LABELS[n]}` })),
+    ]
+    if (showing === 'none') options.unshift({ value: 'none', label: 'nothing yet: pick a scene or add an image' })
+
+    return h(Box, { flexDirection: 'column' },
+      row(h(Text, { bold: true }, 'pixelband'), h(Text, { dimColor: true }, 'changes show in the band right away · Esc closes')),
+      h(Select, {
+        key: 'source', label: 'Show   ', options, value: showing,
+        onSelect: (v: string) => act(() => (v === 'image' ? showImage() : v.startsWith('scene:') ? setScene(v.slice(6), s) : Promise.resolve('')))(),
+      }),
+      h(Input, {
+        key: 'path', label: 'Image  ', placeholder: 'drag an image here, or type its path', submitLabel: 'use it',
+        onSubmit: (v: string) => act(() => setImage(v, s))(),
+      }),
+      recent.length
+        ? row(h(Text, { dimColor: true }, 'Recent '), ...recent.map((f, i) =>
+          h(Button, { key: `recent:${i}`, hotkey: String(i + 1), plain: true, dimColor: true, label: f.name.length > 22 ? `${f.name.slice(0, 20)}…` : f.name, onPress: act(() => setImage(f.path, s)) })))
+        : null,
+      h(Select, {
+        key: 'style', label: 'Style  ', value: config.style,
+        options: STYLES.map((v) => ({ value: v })),
+        onSelect: (v: string) => act(() => setStyle(v))(),
+      }),
+      row(
+        h(Text, {}, 'Size   '),
+        h(Button, { key: 'rows-', label: '-', onPress: act(() => setRows(config.rows - 1)) }),
+        h(Text, {}, `${config.rows} rows`),
+        h(Button, { key: 'rows+', label: '+', onPress: act(() => setRows(config.rows + 1)) }),
+        h(Text, {}, '  Colours'),
+        h(Button, { key: 'colors-', label: '-', onPress: act(() => setColors(config.colors - 2)) }),
+        h(Text, {}, `${config.colors}`),
+        h(Button, { key: 'colors+', label: '+', onPress: act(() => setColors(config.colors + 2)) }),
+      ),
+      source?.kind === 'image'
+        ? row(
+          h(Text, {}, 'Crop   '),
+          h(Button, { key: 'up', hotkey: 'w', plain: true, label: '↑', onPress: act(() => move(0, -MOVE_STEP)) }),
+          h(Button, { key: 'left', hotkey: 'a', plain: true, label: '←', onPress: act(() => move(-MOVE_STEP, 0)) }),
+          h(Button, { key: 'down', hotkey: 's', plain: true, label: '↓', onPress: act(() => move(0, MOVE_STEP)) }),
+          h(Button, { key: 'right', hotkey: 'd', plain: true, label: '→', onPress: act(() => move(MOVE_STEP, 0)) }),
+          h(Button, { key: 'zoom-in', hotkey: 'z', plain: true, label: 'zoom in', onPress: act(() => zoom('in')) }),
+          h(Button, { key: 'zoom-out', hotkey: 'x', plain: true, label: 'zoom out', onPress: act(() => zoom('out')) }),
+          h(Button, { key: 'reset', hotkey: 'r', plain: true, label: 'reset', onPress: act(() => zoom('reset')) }),
+        )
+        : null,
+      source?.kind === 'image'
+        ? h(Select, {
+          key: 'layout', label: 'Layout ', value: config.layout,
+          options: [{ value: 'auto', label: `auto (${layoutOf()})` }, { value: 'banner', label: 'banner: fill the width' }, { value: 'fit', label: 'fit: show it all' }],
+          onSelect: (v: string) => act(() => setLayout(v))(),
+        })
+        : null,
+      source?.kind === 'scene'
+        ? row(h(Text, {}, 'Motion '), h(Button, { key: 'animate', label: config.animate ? 'animating: pause' : 'paused: animate', onPress: act(() => setAnimate(!config.animate)) }))
+        : null,
+      source
+        ? h(Select, {
+          key: 'scope', label: 'Where  ', value: s,
+          options: [{ value: 'global', label: 'every project' }, { value: 'project', label: 'only this project' }],
+          onSelect: (v: string) => act(() => setScope(v as Scope))(),
+        })
+        : null,
+      row(
+        h(Button, { key: 'done', variant: 'primary', role: 'dismiss', label: 'Done', onPress: () => { Promise.resolve(host?.close()).catch(() => {}) } }),
+        h(Button, { key: 'toggle', label: config.enabled ? 'Hide band' : 'Show band', onPress: act(() => setEnabled(!config.enabled)) }),
+        h(Button, { key: 'revert', label: 'Undo changes', onPress: act(revert) }),
+      ),
+      note ? h(Text, { dimColor: true }, note) : null,
+    )
   })
 
   on('command.run', { command: 'pixelband' }, async ($, e, next) => {
-    const io: Io = {
-      readBase64: (path) => $.fs.read(path, { as: 'bytes' }),
-      tmpdir: () => $.env.get('TMPDIR'),
-      run: (argv) => $.process.run(argv),
-    }
     const args = String((e as any).args ?? '').trim()
-    const [sub, ...rest] = args.split(/\s+/)
+    const [sub] = args.split(/\s+/)
     const tail = args.slice(sub.length).trim()
-    const here = /(^|\s)--here$/.test(tail)
+    const isHere = /(^|\s)--here$/.test(tail)
     const arg = tail.replace(/(^|\s)--here$/, '').trim()
-
-    const save = async () => { await $.store.set('config', config); art = null; redraw() }
-    const saveView = async () => { await $.store.set(viewKey(), view); art = null; redraw() }
+    const reply = (text: string) => ({ text })
 
     switch ((sub || '').toLowerCase()) {
-      case 'set': {
-        if (!arg) return { text: 'Usage: /pixelband set <path to an image> [--here]. Tip: drag the file into the terminal.' }
-        const path = cleanPath(arg, (await $.env.get('HOME')) as string | undefined)
-        let loaded
-        try { loaded = await loadImage(io, path) } catch (err: any) { return { text: `${err?.message ?? err}` } }
-        const kept = shrinkToFit(loaded.image, STORED_MAX_SIDE)
-        const name = path.split('/').pop() || path
-        const scope = here ? 'project' : 'global'
-        const put = (await $.store.set(imageKeyFor(scope), encodeStored(kept, name))) as { deny?: string } | undefined
-        if (put && put.deny) return { text: `couldn't save it (${put.deny}). Try /pixelband clear on banners you no longer use.` }
-        image = kept; imageName = name; imageScope = scope; imageClear = transparency(kept)
-        view = { ...DEFAULT_VIEW }
-        await $.store.set(viewKey(), view)
-        art = null
-        if (!config.enabled) { config.enabled = true; await $.store.set('config', config) }
-        redraw()
-        setMood('intro')
-        return { text: `${name} is now ${here ? "this project's" : 'your'} banner (${loaded.image.width}x${loaded.image.height}, read via ${loaded.via}).` }
-      }
+      case '':
+      case 'menu':
+        await openMenu()
+        return {}
+      case 'set':
+        return reply(await setImage(arg, isHere ? 'project' : 'global'))
+      case 'scene':
+        return reply(await setScene(arg.toLowerCase(), isHere ? 'project' : 'global'))
       case 'size': {
         const n = Number(arg)
-        if (!Number.isFinite(n)) return { text: 'Usage: /pixelband size <rows>, from 2 to 24.' }
-        config.rows = clampInt(n, 2, 24); await save()
-        return { text: `${config.rows} rows tall (${config.rows * 2} pixels), as much as the terminal allows.` }
+        return reply(Number.isFinite(n) && arg ? await setRows(n) : 'Usage: /pixelband size <rows>, from 2 to 24.')
       }
-      case 'style': {
-        const name = arg.toLowerCase() as Style
-        if (!STYLES.includes(name)) return { text: `Usage: /pixelband style ${STYLES.join('|')}` }
-        config.style = name; await save()
-        return { text: `style: ${name}.` }
-      }
-      case 'layout': {
-        const mode = arg.toLowerCase() as Layout
-        if (!['auto', 'banner', 'fit'].includes(mode)) return { text: 'Usage: /pixelband layout banner|fit|auto' }
-        config.layout = mode; await save()
-        return { text: `layout: ${mode}${mode === 'auto' ? ` (${layoutOf()} for this image)` : ''}.` }
-      }
+      case 'style':
+        return reply(await setStyle(arg.toLowerCase()))
+      case 'layout':
+        return reply(await setLayout(arg.toLowerCase()))
       case 'move': {
         const [dir, count] = arg.toLowerCase().split(/\s+/)
         const n = Math.max(1, Math.min(10, Number(count) || 1)) * MOVE_STEP
         const d = ({ up: [0, -n], down: [0, n], left: [-n, 0], right: [n, 0] } as Record<string, number[]>)[dir]
-        if (!d) return { text: 'Usage: /pixelband move up|down|left|right [steps]' }
-        view = { ...view, focusX: Math.min(1, Math.max(0, view.focusX + d[0])), focusY: Math.min(1, Math.max(0, view.focusY + d[1])) }
-        await saveView()
-        return { text: `crop centred at ${Math.round(view.focusX * 100)}% across, ${Math.round(view.focusY * 100)}% down.` }
+        return reply(d ? await move(d[0], d[1]) : 'Usage: /pixelband move up|down|left|right [steps]')
       }
-      case 'zoom': {
-        const how = arg.toLowerCase()
-        if (!['in', 'out', 'reset'].includes(how)) return { text: 'Usage: /pixelband zoom in|out|reset' }
-        const zoom = how === 'reset' ? 1 : Math.min(4, Math.max(1, view.zoom * (how === 'in' ? 1.25 : 0.8)))
-        view = how === 'reset' ? { ...DEFAULT_VIEW } : { ...view, zoom: Math.round(zoom * 100) / 100 }
-        await saveView()
-        return { text: `zoom ${view.zoom}x.` }
-      }
+      case 'zoom':
+        return reply(await zoom(arg.toLowerCase()))
       case 'colors':
       case 'colours': {
         const n = Number(arg)
-        if (!Number.isFinite(n)) return { text: 'Usage: /pixelband colors <n>, from 2 to 32.' }
-        config.colors = clampInt(n, 2, 32); await save()
-        return { text: `${config.colors}-colour palette.` }
+        return reply(Number.isFinite(n) && arg ? await setColors(n) : 'Usage: /pixelband colors <n>, from 2 to 32.')
       }
       case 'on':
       case 'off':
-        config.enabled = sub.toLowerCase() === 'on'; await save()
-        return { text: `${config.enabled ? 'on' : 'off'}.` }
+        return reply(await setEnabled(sub.toLowerCase() === 'on'))
+      case 'animate':
+        return reply(['on', 'off'].includes(arg) ? await setAnimate(arg === 'on') : 'Usage: /pixelband animate on|off')
       case 'clear': {
-        await $.store.delete(here ? projectKey() : 'image:global')
-        await loadState(); redraw()
-        return { text: `cleared ${here ? "this project's" : 'the global'} image.` }
+        await $.store.delete(isHere ? projectKey() : 'image:global')
+        await loadState(); redraw(); syncTimer()
+        return reply(`cleared ${isHere ? "this project's" : 'the global'} banner.`)
       }
       case 'demo': {
         const m = arg.toLowerCase()
-        if (!['working', 'done', 'error', 'intro'].includes(m)) return { text: 'Usage: /pixelband demo working|done|error|intro' }
-        if (!image) return { text: 'set an image first (/pixelband set <path>).' }
-        working = false
-        setMood(m as Mood)
+        if (!['working', 'done', 'error', 'intro'].includes(m)) return reply('Usage: /pixelband demo working|done|error|intro')
+        if (!source) return reply('set an image or scene first.')
         // A demo "working" has no turn to end it, so stop it after a few seconds.
-        if (m === 'working') $.clock.after(3000, () => { if (mood === 'working' && !working) setMood('idle') })
-        return { text: `playing ${m}.` }
+        working = m === 'working'
+        setMood(m as Mood)
+        if (m === 'working') $.clock.after(4000, () => { if (mood === 'working') { working = false; setMood('idle') } })
+        return reply(`playing ${m}.`)
       }
-      default: {
-        const status = image
-          ? `showing ${imageName} (${imageScope === 'project' ? 'this project' : 'global'}), ${layoutOf()}, ${config.style}, ${config.rows} rows, ${config.enabled ? 'on' : 'off'}`
-          : 'no image yet'
-        return { text: `${status}.\nCommands: set <image> [--here] · style <${STYLES.join('|')}> · layout <banner|fit|auto> · move <up|down|left|right> · zoom <in|out|reset> · size <rows> · colors <n> · on · off · clear [--here] · demo <working|done|error|intro>` }
+      case 'status':
+      case 'help': {
+        const where = scope === 'project' ? 'this project' : 'global'
+        const status = !source ? 'nothing showing yet'
+          : `showing ${source.kind === 'scene' ? `the ${source.scene} scene` : source.name} (${where})${source.kind === 'image' ? `, ${layoutOf()}` : ''}, ${config.style}, ${config.rows} rows, ${config.enabled ? 'on' : 'off'}`
+        return reply(`${status}.\n/pixelband opens the menu. Or: set <image> [--here] · scene <${SCENES.join('|')}> · style <${STYLES.join('|')}> · layout <banner|fit|auto> · move <up|down|left|right> · zoom <in|out|reset> · size <rows> · colors <n> · animate <on|off> · on · off · clear [--here] · demo <working|done|error|intro>`)
       }
+      default:
+        return reply(`unknown command "${sub}". /pixelband help lists them, or /pixelband alone opens the menu.`)
     }
   })
 }

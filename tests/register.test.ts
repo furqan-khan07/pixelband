@@ -10,8 +10,10 @@ const band = (isWorking = false, maxRows = 10) => ({
 }) as const
 
 /** Everything beneath the mod: store, env, clock, files, and a record of every frame blitted. */
-function world(on: any, files: Record<string, string> = {}) {
+function world(on: any, files: Record<string, string> = {}, mtimes: Record<string, number> = {}) {
   const blits: any[] = []
+  const panes: any[] = []
+  const closed: any[] = []
   on('session.start', ($: any, e: any) => ({ cwd: e.cwd }))
   on('session.root', () => ({ value: '/work' }))
   on('command.register', ($: any, e: any) => ({ value: { command: e.name } }))
@@ -19,6 +21,14 @@ function world(on: any, files: Record<string, string> = {}) {
   on('ui.blit', ($: any, e: any) => { blits.push(e); return { value: undefined } })
   on('fs.read', ($: any, e: any) => (e.path in files ? { value: { base64: files[e.path] } } : { deny: 'no such file' }))
   on('process.run', () => ({ value: { exitCode: 127, stdout: '', stderr: 'not installed' } }))
+  on('fs.list', ($: any, e: any) => {
+    const dir = e.path.replace(/\/$/, '') + '/'
+    const names = Object.keys(files).filter((p) => p.startsWith(dir) && !p.slice(dir.length).includes('/')).map((p) => p.slice(dir.length))
+    return names.length ? { value: names.sort().map((name) => ({ name, kind: 'file', size: 1, isLink: false })) } : { deny: 'no such directory' }
+  })
+  on('fs.stat', ($: any, e: any) => (e.path in files ? { value: { kind: 'file', size: 1, mtimeMs: mtimes[e.path] ?? 0, isLink: false } } : { deny: 'missing' }))
+  on('ui.open', ($: any, e: any) => { panes.push(e); return { value: { isPlaced: true } } })
+  on('ui.close', ($: any, e: any) => { closed.push(e); return { value: undefined } })
   on('turn.start', ($: any, e: any) => ({ turnId: e.turnId }))
   on('turn.complete', ($: any, e: any) => ({ text: e.answer }))
   // What Claude Code itself draws in the band: nothing, which we stand in for with a marker.
@@ -26,7 +36,7 @@ function world(on: any, files: Record<string, string> = {}) {
   mock.store(on)
   mock.env(on, { HOME: '/Users/me', TMPDIR: '/tmp' })
   const clock = mock.clock(on)
-  return { blits, clock }
+  return { blits, clock, panes, closed }
 }
 
 const pix = (args: string) => ({ command: 'pixelband', args })
@@ -37,7 +47,7 @@ describe('register', () => {
     world(on)
     await $.session.start(SESSION)
     const ui = await $.ui.mount(band())
-    expect((await ui.find({ type: 'Text', text: /pixelband set/ }))).toBeDefined()
+    expect((await ui.find({ type: 'Text', text: /\/pixelband to pick/ }))).toBeDefined()
     await ui.unmount()
   })
 
@@ -153,17 +163,17 @@ describe('register', () => {
     world(on, { '/a.png': IMAGES.rgba8.png! })
     await $.session.start(SESSION)
     expect(((await $.command.run(pix('set /a.png --here'))) as any).text).toMatch(/this project's banner/)
-    expect(((await $.command.run(pix(''))) as any).text).toMatch(/showing a\.png \(this project\)/)
+    expect(((await $.command.run(pix('status'))) as any).text).toMatch(/showing a\.png \(this project\)/)
     await $.command.run(pix('clear --here'))
     const ui = await $.ui.mount(band())
-    expect(await ui.find({ type: 'Text', text: /pixelband set/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /\/pixelband to pick/ })).toBeDefined()
     await ui.unmount()
   })
 
-  test('with no arguments it shows status and the commands', async ($, on) => {
+  test('status shows what is showing and lists the commands', async ($, on) => {
     world(on)
     await $.session.start(SESSION)
-    expect(((await $.command.run(pix(''))) as any).text).toMatch(/no image yet[\s\S]*set <image>/)
+    expect(((await $.command.run(pix('status'))) as any).text).toMatch(/nothing showing yet[\s\S]*set <image>[\s\S]*scene <city/)
   })
 })
 
@@ -175,7 +185,7 @@ describe('layout', () => {
     await $.session.start(SESSION)
     await $.command.run(pix('set /photo.png'))
     await w.clock.advance(1000)            // let the intro finish
-    expect(((await $.command.run(pix(''))) as any).text).toMatch(/, banner, original,/)
+    expect(((await $.command.run(pix('status'))) as any).text).toMatch(/, banner, original,/)
     const ui = await $.ui.mount(band())
     const art = await ui.find({ key: 'art' })
     expect([art?.props.columns, art?.props.rows]).toEqual([80, 10])
@@ -188,7 +198,7 @@ describe('layout', () => {
     world(on, { '/logo.png': IMAGES.rgba8.png! })   // a quarter of its pixels are transparent
     await $.session.start(SESSION)
     await $.command.run(pix('set /logo.png'))
-    expect(((await $.command.run(pix(''))) as any).text).toMatch(/, fit, /)
+    expect(((await $.command.run(pix('status'))) as any).text).toMatch(/, fit, /)
     const ui = await $.ui.mount(band())
     const cells = cellsOf((await ui.find({ key: 'art' }))?.props.cells as string)
     expect(cells.slice(0, 3)).toEqual([0x20, 0x01000000, 0x01000000]) // empty margin on the left...
@@ -248,5 +258,152 @@ describe('layout', () => {
     expect(art?.props.columns).toBe(250)
     expect((art?.props.columns as number) * (art?.props.rows as number)).toBeLessThanOrEqual(6000)
     await ui.unmount()
+  })
+})
+
+const settle = async () => { for (let i = 0; i < 20; i++) await new Promise((r) => setTimeout(r, 0)) }
+const PANE = {
+  plugin: 'pixelband', surface: 'terminal', component: 'Pane', requestId: 'pixelband',
+  props: { title: 'pixelband', isFocused: true, bodyColumns: 80, placement: 'inline', scroll: { offset: 0, bodyRows: 14 }, view: {} },
+} as const
+const text = async (r: Promise<unknown>) => ((await r) as any).text as string
+
+describe('scenes', () => {
+  test('a scene draws and keeps moving while idle', async ($, on) => {
+    const w = world(on)
+    await $.session.start(SESSION)
+    expect(await text($.command.run(pix('scene city')))).toBe('showing city: rain on a city at night.')
+    const ui = await $.ui.mount(band())
+    expect((await ui.find({ key: 'art' }))?.props.columns).toBe(80)
+    await w.clock.advance(1000)
+    const before = w.blits.length
+    await w.clock.advance(800)                       // no turn running: the rain still falls
+    expect(w.blits.length).toBeGreaterThanOrEqual(before + 9)
+    expect(w.blits.at(-1).cells).not.toBe(w.blits.at(-2).cells)
+    await ui.unmount()
+  })
+
+  test('animate off holds a scene still; unknown scenes get the list', async ($, on) => {
+    const w = world(on)
+    await $.session.start(SESSION)
+    await $.command.run(pix('scene aurora'))
+    const ui = await $.ui.mount(band())
+    expect(await text($.command.run(pix('animate off')))).toBe('scenes hold still.')
+    await w.clock.advance(1500)
+    const n = w.blits.length
+    await w.clock.advance(1500)
+    expect(w.blits.length).toBe(n)
+    expect(await text($.command.run(pix('scene lava')))).toMatch(/^Scenes: city \(rain on a city at night\), space/)
+    await ui.unmount()
+  })
+
+  test('a scene keeps the image underneath, and set replaces both', async ($, on) => {
+    world(on, { '/photo.png': IMAGES.rgb8.png! })
+    await $.session.start(SESSION)
+    await $.command.run(pix('set /photo.png'))
+    await $.command.run(pix('scene fire'))
+    expect(await text($.command.run(pix('status')))).toMatch(/^showing the fire scene \(global\), original/)
+    await $.session.start(SESSION)                   // remembered across sessions
+    expect(await text($.command.run(pix('status')))).toMatch(/^showing the fire scene/)
+    await $.command.run(pix('set /photo.png'))
+    expect(await text($.command.run(pix('status')))).toMatch(/^showing photo\.png \(global\), banner/)
+  })
+})
+
+describe('menu', () => {
+  test('/pixelband alone opens the menu pane with the keyboard, and prints nothing', async ($, on) => {
+    const w = world(on)
+    await $.session.start(SESSION)
+    const r: any = await $.command.run(pix(''))
+    expect(r.text).toBeUndefined()
+    expect(w.panes[0]).toMatchObject({ id: 'pixelband', focus: true, closeOnEscape: true })
+  })
+
+  test('picking a scene from the menu shows it in the band', async ($, on) => {
+    world(on)
+    await $.session.start(SESSION)
+    await $.command.run(pix(''))
+    const menu = await $.ui.mount(PANE)
+    const src = await menu.find({ key: 'source' })
+    expect((src?.props.options as any[]).map((o) => o.value)).toEqual(['none', 'scene:city', 'scene:space', 'scene:aurora', 'scene:fire'])
+    await menu.select({ key: 'source', value: 'scene:space' })
+    await settle()
+    expect(await text($.command.run(pix('status')))).toMatch(/^showing the space scene/)
+    await menu.redraw()
+    expect(await menu.find({ type: 'Text', text: /^showing space: stars/ })).toBeDefined()
+    expect((await menu.find({ key: 'source' }))?.props.value).toBe('scene:space')
+    expect(await menu.find({ key: 'animate' })).toBeDefined()   // scene controls, not crop ones
+    expect(await menu.find({ key: 'up' })).toBeUndefined()
+  })
+
+  test('typing or dropping a path in the menu loads the image, then crop buttons appear', async ($, on) => {
+    world(on, { '/Users/me/cat.png': IMAGES.rgb8.png! })
+    await $.session.start(SESSION)
+    await $.command.run(pix(''))
+    const menu = await $.ui.mount(PANE)
+    await menu.input({ key: 'path', text: "'~/cat.png'" })
+    await settle()
+    await menu.redraw()
+    expect(await menu.find({ type: 'Text', text: /^cat\.png is now your banner/ })).toBeDefined()
+    await menu.press({ key: 'up' })
+    await settle()
+    expect(await text($.command.run(pix('move up')))).toBe('crop centred at 50% across, 34% down.')
+  })
+
+  test('recent images: the newest few from Downloads, Desktop and Pictures, one press each', async ($, on) => {
+    world(on, {
+      '/Users/me/Downloads/old.png': IMAGES.rgb8.png!,
+      '/Users/me/Downloads/notes.txt': 'aGk=',
+      '/Users/me/Desktop/new.png': IMAGES.rgba8.png!,
+    }, { '/Users/me/Downloads/old.png': 100, '/Users/me/Desktop/new.png': 200 })
+    await $.session.start(SESSION)
+    await $.command.run(pix(''))
+    await settle()
+    const menu = await $.ui.mount(PANE)
+    const buttons = await menu.findAll({ type: 'Button', text: /\.png/ })
+    expect(buttons.map((b) => b.props.label)).toEqual(['new.png', 'old.png'])
+    await menu.press({ key: 'recent:1' })
+    await settle()
+    expect(await text($.command.run(pix('status')))).toMatch(/^showing old\.png/)
+  })
+
+  test('undo puts everything back the way it was when the menu opened', async ($, on) => {
+    world(on, { '/photo.png': IMAGES.rgb8.png! })
+    await $.session.start(SESSION)
+    await $.command.run(pix('set /photo.png'))
+    await $.command.run(pix(''))
+    const menu = await $.ui.mount(PANE)
+    await menu.select({ key: 'style', value: 'gameboy' })
+    await menu.select({ key: 'source', value: 'scene:city' })
+    await menu.press({ key: 'rows+' })
+    await settle()
+    expect(await text($.command.run(pix('status')))).toMatch(/^showing the city scene \(global\), gameboy, 13 rows/)
+    await menu.press({ key: 'revert' })
+    await settle()
+    expect(await text($.command.run(pix('status')))).toMatch(/^showing photo\.png \(global\), banner, original, 12 rows/)
+  })
+
+  test('where: move the banner to just this project and back', async ($, on) => {
+    world(on)
+    await $.session.start(SESSION)
+    await $.command.run(pix('scene city'))
+    await $.command.run(pix(''))
+    const menu = await $.ui.mount(PANE)
+    await menu.select({ key: 'scope', value: 'project' })
+    await settle()
+    expect(await text($.command.run(pix('status')))).toMatch(/\(this project\)/)
+    await menu.select({ key: 'scope', value: 'global' })
+    await settle()
+    expect(await text($.command.run(pix('status')))).toMatch(/\(global\)/)
+  })
+
+  test('Done closes the pane', async ($, on) => {
+    const w = world(on)
+    await $.session.start(SESSION)
+    await $.command.run(pix(''))
+    const menu = await $.ui.mount(PANE)
+    await menu.press({ key: 'done' })
+    await settle()
+    expect(w.closed[0]).toMatchObject({ id: 'pixelband' })
   })
 })
