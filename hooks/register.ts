@@ -201,7 +201,7 @@ export const register: Register = (on) => {
         if (!arg) return { text: 'Usage: /pixelband set <path to an image> [--here]. Tip: drag the file into the terminal.' }
         const path = cleanPath(arg, (await $.env.get('HOME')) as string | undefined)
         let loaded
-        try { loaded = await loadImage(io, path) } catch (err: any) { return { text: `pixelband: ${err?.message ?? err}` } }
+        try { loaded = await loadImage(io, path) } catch (err: any) { return { text: `${err?.message ?? err}` } }
         const kept = shrinkToFit(loaded.image, STORED_MAX_SIDE)
         const name = path.split('/').pop() || path
         const stored: StoredImage = { w: kept.width, h: kept.height, rgba: kept.data.toBase64(), name }
@@ -211,45 +211,45 @@ export const register: Register = (on) => {
         if (!config.enabled) { config.enabled = true; await $.store.set('config', config) }
         redraw()
         setMood('intro')
-        return { text: `pixelband: ${name} is now ${here ? "this project's" : 'your'} banner (${loaded.image.width}x${loaded.image.height}, read via ${loaded.via}).` }
+        return { text: `${name} is now ${here ? "this project's" : 'your'} banner (${loaded.image.width}x${loaded.image.height}, read via ${loaded.via}).` }
       }
       case 'size': {
         const n = Number(arg)
         if (!Number.isFinite(n)) return { text: 'Usage: /pixelband size <rows>, from 2 to 16.' }
         config.rows = clampInt(n, 2, 16); await save()
-        return { text: `pixelband: ${config.rows} rows tall (${config.rows * 2} pixels).` }
+        return { text: `${config.rows} rows tall (${config.rows * 2} pixels).` }
       }
       case 'colors':
       case 'colours': {
         const n = Number(arg)
         if (!Number.isFinite(n)) return { text: 'Usage: /pixelband colors <n>, from 2 to 32.' }
         config.colors = clampInt(n, 2, 32); await save()
-        return { text: `pixelband: ${config.colors}-colour palette.` }
+        return { text: `${config.colors}-colour palette.` }
       }
       case 'on':
       case 'off':
         config.enabled = sub.toLowerCase() === 'on'; await save()
-        return { text: `pixelband: ${config.enabled ? 'on' : 'off'}.` }
+        return { text: `${config.enabled ? 'on' : 'off'}.` }
       case 'clear': {
         await $.store.delete(here ? projectKey() : 'image:global')
         await loadState(); redraw()
-        return { text: `pixelband: cleared ${here ? "this project's" : 'the global'} image.` }
+        return { text: `cleared ${here ? "this project's" : 'the global'} image.` }
       }
       case 'demo': {
         const m = arg.toLowerCase()
         if (!['working', 'done', 'error', 'intro'].includes(m)) return { text: 'Usage: /pixelband demo working|done|error|intro' }
-        if (!image) return { text: 'pixelband: set an image first (/pixelband set <path>).' }
+        if (!image) return { text: 'set an image first (/pixelband set <path>).' }
         working = false
         setMood(m as Mood)
         // A demo "working" has no turn to end it, so stop it after a few seconds.
         if (m === 'working') $.clock.after(3000, () => { if (mood === 'working' && !working) setMood('idle') })
-        return { text: `pixelband: playing ${m}.` }
+        return { text: `playing ${m}.` }
       }
       default: {
         const status = image
           ? `showing ${imageName} (${imageScope === 'project' ? 'this project' : 'global'}), ${config.rows} rows, ${config.colors} colours, ${config.enabled ? 'on' : 'off'}`
           : 'no image yet'
-        return { text: `pixelband: ${status}.\nCommands: set <image> [--here] · size <rows> · colors <n> · on · off · clear [--here] · demo <working|done|error|intro>` }
+        return { text: `${status}.\nCommands: set <image> [--here] · size <rows> · colors <n> · on · off · clear [--here] · demo <working|done|error|intro>` }
       }
     }
   })

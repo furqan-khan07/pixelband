@@ -45,7 +45,7 @@ describe('register', () => {
     world(on, { '/Users/me/art.png': IMAGES.rgba8.png! })
     await $.session.start(SESSION)
     const r: any = await $.command.run(pix('set ~/art.png'))
-    expect(r.text).toMatch(/art\.png is now your banner/)
+    expect(r.text).toMatch(/^art\.png is now your banner/)  // no 'pixelband:' prefix: Claude Code adds the plugin's name itself
     const ui = await $.ui.mount(band())
     const art = await ui.find({ key: 'art' })
     expect(art?.type).toBe('Raster')
