@@ -1,5 +1,5 @@
 import { describe, expect, test, tier } from 'claude-code/testing'
-import { downscale, fit, medianCut, pixelate, shrinkToFit, TRANSPARENT } from '../hooks/pixelate'
+import { cropRect, downscale, downscaleRegion, fit, medianCut, pixelate, shrinkToFit, transparency, TRANSPARENT } from '../hooks/pixelate'
 
 tier('user')
 
@@ -44,5 +44,21 @@ describe('pixelate', () => {
     expect(opaque.size).toBeLessThanOrEqual(6)
     expect(art.px[0]).toBe(TRANSPARENT)       // the see-through strip on the left
     expect(art.px[19]).not.toBe(TRANSPARENT)  // the right edge is solid
+  })
+
+  test('cropRect: the biggest rectangle of the banner shape, centred, zoomed and kept inside', async () => {
+    expect(cropRect(160, 90, 4, { focusX: 0.5, focusY: 0.5, zoom: 1 })).toEqual({ x: 0, y: 25, w: 160, h: 40 })
+    expect(cropRect(160, 90, 1, { focusX: 0.5, focusY: 0.5, zoom: 1 })).toEqual({ x: 35, y: 0, w: 90, h: 90 })
+    expect(cropRect(160, 90, 4, { focusX: 0.5, focusY: 0.5, zoom: 2 })).toEqual({ x: 40, y: 35, w: 80, h: 20 })
+    expect(cropRect(160, 90, 4, { focusX: 0, focusY: 1, zoom: 2 })).toEqual({ x: 0, y: 70, w: 80, h: 20 }) // clamped
+  })
+
+  test('downscaleRegion reads only the part it is given', async () => {
+    const src = img(4, 1, (x) => (x < 2 ? [255, 0, 0, 255] : [0, 0, 255, 255]))
+    expect(Array.from(downscaleRegion(src, { x: 2, y: 0, w: 2, h: 1 }, 1, 1).data)).toEqual([0, 0, 255, 255])
+  })
+
+  test('transparency is the share of see-through pixels', async () => {
+    expect(transparency(img(4, 1, (x) => [0, 0, 0, x === 0 ? 0 : 255]))).toBe(0.25)
   })
 })
