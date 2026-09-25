@@ -173,7 +173,7 @@ export const register: Register = (on) => {
     const a = artFor(rows, Math.min(props.bodyColumns ?? MAX_COLS, MAX_COLS))
     if (!a) return next(e)
 
-    // Keep the mood honest if a turn event was missed.
+    // Catch up if a turn event was missed.
     if (props.isWorking && mood === 'idle') { working = true; setMood('working') }
     if (!props.isWorking && mood === 'working') { working = false; setMood('idle') }
 
