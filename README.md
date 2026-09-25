@@ -1,10 +1,10 @@
 # pixelband
 
-**Put any image above your Claude Code prompt as pixel art, and watch it react while Claude works.**
+**Pixel art above your Claude Code prompt that reacts while Claude works: your own image, or an animated scene.**
 
-![pixelband: pixel art above the prompt that dissolves in, sweeps with light while Claude works, sparkles when a turn finishes and glitches on an error](docs/demo.gif)
+![pixelband: animated pixel-art scenes above the prompt. Rain on a city gets heavier while Claude works and lightning strikes when it finishes; stars go to warp speed; the aurora brightens; the fire climbs](docs/demo.gif)
 
-<sub>The art and effects are pixelband's own output, rendered frame by frame. The prompt box and labels around it are a mock-up, and a real terminal will look slightly different depending on your font.</sub>
+<sub>The scenes are pixelband's own output, rendered frame by frame. The prompt box and labels around it are a mock-up, and a real terminal will look slightly different depending on your font.</sub>
 
 I spend a lot of hours in Claude Code, and it looks the same for everyone. So I wanted to make mine
 *mine*: a picture of my choosing sitting right above the prompt, one that actually knows what's
@@ -21,13 +21,17 @@ git clone https://github.com/furqan-khan07/pixelband
 CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1 claude --plugin-dir ./pixelband
 ```
 
-Then, inside Claude Code:
+Then, inside Claude Code, type `/pixelband` to open the menu. Pick a scene, or drag an image into
+the menu's image field (your newest downloads and screenshots are listed there too), and choose a
+style, size and crop. Every change shows in the band straight away, and **Undo changes** puts it
+all back.
+
+Or skip the menu:
 
 ```
+/pixelband scene city
 /pixelband set ~/Pictures/cat.jpg
 ```
-
-Tip: type `/pixelband set ` and drag an image into the terminal. It pastes the path for you.
 
 Once mods ship properly, it'll install like any other plugin.
 
@@ -35,6 +39,8 @@ Once mods ship properly, it'll install like any other plugin.
 
 | | |
 |---|---|
+| `/pixelband` | open the menu |
+| `/pixelband scene <name>` | an animated scene: `city` (rain on a city at night), `space`, `aurora` or `fire` |
 | `/pixelband set <image>` | use an image: PNG, JPEG, HEIC (iPhone photos), WebP, GIF and more |
 | `/pixelband set <image> --here` | use it for **this project only**, so each repo gets its own banner |
 | `/pixelband style <name>` | `original`, `gameboy`, `pico8`, `mono` or `sepia` |
@@ -43,9 +49,24 @@ Once mods ship properly, it'll install like any other plugin.
 | `/pixelband layout <auto\|banner\|fit>` | `banner` fills the whole width with a crop; `fit` shows the whole image, centred. `auto` picks `fit` for logos and sprites with see-through backgrounds |
 | `/pixelband size <rows>` | how tall the band is, 2 to 24 rows (two pixels per row) |
 | `/pixelband colors <n>` | palette size for the `original` style, 2 to 32. Fewer colours reads more like pixel art |
+| `/pixelband animate on\|off` | pause a scene's motion (it still reacts to Claude) |
 | `/pixelband on` / `off` | show or hide it |
 | `/pixelband clear [--here]` | forget the image |
 | `/pixelband demo <mood>` | play `working`, `done`, `error` or `intro` on demand (good for screenshots) |
+
+## Scenes
+
+Each scene is drawn from code, not a video, and reacts to what Claude is doing:
+
+| scene | idle | while Claude works | when it finishes |
+|---|---|---|---|
+| `city` | rain, windows switching on and off, flickering neon, a wet street | the rain gets heavier | lightning |
+| `space` | stars drifting past a ringed planet | warp speed | a hyperspace flash |
+| `aurora` | northern lights over mountains and pines | brighter, faster curtains | a bright pulse |
+| `fire` | low flames over your terminal's own background | the flames climb | a burst of embers |
+
+The styles work on scenes too, so `/pixelband scene city` plus `/pixelband style gameboy` is a
+four-green rainy city.
 
 ## Why pixel art and not the actual photo?
 
@@ -69,20 +90,24 @@ and sprites blend right in.
 - **Photos go through your OS.** For JPEG, HEIC, WebP and friends it asks macOS's built-in `sips`
   (or ImageMagick on Linux) to convert and shrink the image first, so a 20 MB iPhone photo never
   gets pulled through the mod.
-- **The animation is cheap.** Each mood is a pure function of time. While one plays, a timer swaps
-  just the pixel grid 12 times a second, and when the band goes idle the timer stops entirely.
+- **The animation is cheap.** A timer swaps just the pixel grid 12 times a second, so nothing else
+  in Claude Code redraws. With an image, the timer only runs while an effect plays; a scene keeps it
+  running (`/pixelband animate off` stops it).
 
 `claude plugin validate` lists everything a mod touches, and for pixelband that's:
 
 ```
-hooks: session.start, turn.start, turn.complete, ui.render{component=AbovePrompt}, command.run{command=pixelband}
-calls: $.clock.after, $.clock.every, $.command.register, $.env.get, $.fs.read, $.process.run,
-       $.session.root, $.store.delete, $.store.get, $.store.set, $.ui.blit, $.ui.invalidate, $.ui.resolve
+hooks: session.start, turn.start, turn.complete, ui.render{component=AbovePrompt},
+       ui.render{component=Pane, requestId=pixelband}, command.run{command=pixelband}
+calls: $.clock.after, $.clock.every, $.command.register, $.env.get, $.fs.list, $.fs.read, $.fs.stat,
+       $.process.run, $.session.root, $.store.delete, $.store.get, $.store.set, $.ui.blit, $.ui.close,
+       $.ui.invalidate, $.ui.open, $.ui.resolve
 env reads: HOME, TMPDIR
 ```
 
 `$.process.run` is only ever `sips`, `magick`/`convert` (to convert a photo) and `rm` (to delete
-the temporary file that conversion makes).
+the temporary file that conversion makes). `$.fs.list` and `$.fs.stat` only look at Downloads,
+Desktop and Pictures, to list your newest images in the menu.
 
 ## Limitations
 
