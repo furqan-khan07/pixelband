@@ -14,11 +14,17 @@ something errors. It's a small thing, but it makes the terminal feel like your o
 ## Try it
 
 pixelband is a **Claude Mod**, built on the function hooks Anthropic is shipping for Claude Code.
-They're in preview right now, so for the moment you load it from a folder:
+Install it from your shell:
 
 ```bash
-git clone https://github.com/furqan-khan07/pixelband
-CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1 claude --plugin-dir ./pixelband
+claude plugin marketplace add furqan-khan07/pixelband
+claude plugin install pixelband@pixelband
+```
+
+Mods are in preview right now, so start Claude Code with the preview flag:
+
+```bash
+CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1 claude
 ```
 
 Then, inside Claude Code, type `/pixelband` to open the menu. Pick a scene, or drag an image into
@@ -36,7 +42,7 @@ Or skip the menu:
 /pixelband set ~/Pictures/cat.jpg
 ```
 
-Once mods ship properly, it'll install like any other plugin.
+Once mods ship properly, the flag won't be needed.
 
 ## Commands
 
@@ -140,6 +146,13 @@ Desktop and Pictures, to list your newest images in the menu.
 - Only your own turns animate it. Subagents working in the background don't.
 
 ## Development
+
+To hack on it, clone the repo and load it straight from the folder:
+
+```bash
+git clone https://github.com/furqan-khan07/pixelband
+CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1 claude --plugin-dir ./pixelband
+```
 
 ```bash
 claude plugin validate .                                   # what the engine will load and refuse

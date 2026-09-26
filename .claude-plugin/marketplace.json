@@ -1,0 +1,12 @@
+{
+  "name": "pixelband",
+  "description": "Pixel art above the Claude Code prompt that reacts while Claude works",
+  "owner": { "name": "Furqan Khan" },
+  "plugins": [
+    {
+      "name": "pixelband",
+      "source": "./",
+      "description": "Animated pixel-art scenes or your own image above the prompt, reacting to Claude. Zero tokens."
+    }
+  ]
+}
