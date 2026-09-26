@@ -20,7 +20,7 @@
  * builds the next frame and swaps it into the Raster with `$.ui.blit`, so nothing else redraws. The
  * menu is a pane (`ui.render` for `Pane`) whose controls call the same actions as the commands.
  */
-import type { Register } from 'claude-code'
+import type { Register, RenderElement } from 'claude-code'
 import { decodeAnim, encodeAnim, frameAt, spread, stack, type Anim, type StoredAnim } from './anim'
 import { DURATION, FRAME_MS, frame, isOneShot, type Mood } from './effects'
 import { cleanPath, loadImage, type Io } from './load'
@@ -552,7 +552,7 @@ export const register: Register = (on) => {
       home: () => $.env.get('HOME'),
       list: (path) => $.fs.list(path),
       stat: (path) => $.fs.stat(path),
-      open: () => $.ui.open({ id: MENU, title: 'pixelband', focus: true, closeOnEscape: true, rows: 14 }),
+      open: () => $.ui.open({ id: MENU, title: 'pixelband', focus: true, closeOnEscape: true, rows: 18 }),
       close: () => $.ui.close({ id: MENU }),
       panes: () => $.ui.panes(),
       io: {
@@ -598,7 +598,7 @@ export const register: Register = (on) => {
     if (!source) {
       band = null
       if (!ready) return next(e)
-      return h(Text, { dimColor: true }, 'pixelband · /pixelband to pick an image or scene')
+      return h(Text, { dimColor: true }, 'pixelband · /pixelband to pick an image or scene') as RenderElement
     }
     const cols = Math.max(1, Math.min(props.bodyColumns ?? 80, MAX_COLS))
     limits = { cols, maxRows: Math.max(1, props.maxRows ?? 24) }
@@ -617,7 +617,7 @@ export const register: Register = (on) => {
 
     const cells = currentCells()
     if (!cells) return next(e)
-    return h(Box, { flexDirection: 'row' }, h(Raster, { key: KEY, columns: band.columns, rows: band.rows, cells }))
+    return h(Box, { flexDirection: 'row' }, h(Raster, { key: KEY, columns: band.columns, rows: band.rows, cells })) as RenderElement
   })
 
   on('ui.render', { component: 'Pane', requestId: MENU }, ($, e, next) => {
@@ -727,7 +727,7 @@ export const register: Register = (on) => {
       ),
       note ? line(note, { dimColor: true }) : null,
       row(h(Text, { dimColor: true }, 'like it? a star helps:'), h(Link, { href: REPO_URL, label: 'github.com/furqan-khan07/pixelband' })),
-    )
+    ) as RenderElement
   })
 
   on('command.run', { command: 'pixelband' }, async ($, e, next) => {

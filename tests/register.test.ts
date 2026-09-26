@@ -7,7 +7,7 @@ tier('user')
 const SESSION = { surface: 'terminal', isInteractive: true, cwd: '/work' } as const
 const band = (isWorking = false, maxRows = 10) => ({
   plugin: 'pixelband', surface: 'terminal', component: 'AbovePrompt',
-  props: { hasSurvey: false, isWorking, maxRows, bodyColumns: 80 },
+  props: { hasSurvey: false, isWorking, maxRows, bodyColumns: 80, scroll: { offset: 0, bodyRows: maxRows }, view: {} },
 }) as const
 
 /** Everything beneath the mod: store, env, clock, files, and a record of every frame blitted. */
@@ -41,8 +41,9 @@ function world(on: any, files: Record<string, string> = {}, mtimes: Record<strin
   return { blits, clock, panes, closed }
 }
 
-const pix = (args: string) => ({ command: 'pixelband', args })
-const complete = (reason: string) => ({ answer: 'x', durationMs: 1, isAborted: reason === 'aborted', turnId: 't1', reason })
+// Only the fields pixelband reads; the engine's other fields don't matter to it.
+const pix = (args: string) => ({ command: 'pixelband', args }) as any
+const complete = (reason: string) => ({ answer: 'x', durationMs: 1, isAborted: reason === 'aborted', turnId: 't1', reason }) as any
 
 describe('register', () => {
   test('before an image is set, the band says how to set one', async ($, on) => {
@@ -255,7 +256,7 @@ describe('layout', () => {
     await $.command.run(pix('set /photo.png'))
     await w.clock.advance(1000)            // let the intro finish
     await $.command.run(pix('size 24'))
-    const ui = await $.ui.mount({ ...band(false, 60), props: { hasSurvey: false, isWorking: false, maxRows: 60, bodyColumns: 400 } })
+    const ui = await $.ui.mount({ ...band(false, 60), props: { hasSurvey: false, isWorking: false, maxRows: 60, bodyColumns: 400, scroll: { offset: 0, bodyRows: 60 }, view: {} } })
     const art = await ui.find({ key: 'art' })
     expect(art?.props.columns).toBe(250)
     expect((art?.props.columns as number) * (art?.props.rows as number)).toBeLessThanOrEqual(6000)

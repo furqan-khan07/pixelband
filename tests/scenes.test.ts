@@ -30,7 +30,7 @@ describe('scenes', () => {
   test('Claude working changes every scene (more rain, warp, brighter lights, taller flames)', async () => {
     for (const name of SCENES) {
       const idle = makeScene(name, 60, 20), busy = makeScene(name, 60, 20)
-      let a = new Uint32Array(), b = new Uint32Array()
+      let a: Uint32Array = new Uint32Array(), b: Uint32Array = new Uint32Array()
       for (let t = 0; t <= 2000; t += 80) { a = idle(at(t, 0)); b = busy(at(t, 1)) }
       expect(same(a, b)).toBe(false)
     }
@@ -39,7 +39,7 @@ describe('scenes', () => {
   test('a finished turn gets its flourish', async () => {
     for (const name of SCENES) {
       const plain = makeScene(name, 60, 20), flashed = makeScene(name, 60, 20)
-      let a = new Uint32Array(), b = new Uint32Array()
+      let a: Uint32Array = new Uint32Array(), b: Uint32Array = new Uint32Array()
       for (let t = 0; t <= 800; t += 80) { a = plain(at(t)); b = flashed(at(t, 0, t >= 400 ? t - 400 : null)) }
       expect(same(a, b)).toBe(false)
     }
