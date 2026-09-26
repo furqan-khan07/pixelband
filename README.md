@@ -2,7 +2,7 @@
 
 **Pixel art above your Claude Code prompt that reacts while Claude works: your own image, or an animated scene.**
 
-![pixelband: animated pixel-art scenes above the prompt. Rain on a city gets heavier while Claude works and lightning strikes when it finishes; stars go to warp speed; the aurora brightens; the fire climbs](docs/demo.gif)
+![pixelband: animated pixel-art scenes above the prompt. A spark between Michelangelo's two hands blazes while Claude works and floods out in a ring of light when it finishes; rain on a city gets heavier and lightning strikes; stars go to warp speed; the aurora brightens; the fire climbs](docs/demo.gif)
 
 <sub>The scenes are pixelband's own output, rendered frame by frame. The prompt box and labels around it are a mock-up, and a real terminal will look slightly different depending on your font.</sub>
 
@@ -43,7 +43,7 @@ Once mods ship properly, it'll install like any other plugin.
 | | |
 |---|---|
 | `/pixelband` | open the menu |
-| `/pixelband scene <name>` | an animated scene: `city` (rain on a city at night), `space`, `aurora` or `fire` |
+| `/pixelband scene <name>` | an animated scene: `creation`, `city` (rain on a city at night), `space`, `aurora` or `fire` |
 | `/pixelband set <image>` | use an image: PNG, JPEG, HEIC (iPhone photos), WebP, GIF and more |
 | `/pixelband set <image> --here` | use it for **this project only**, so each repo gets its own banner |
 | `/pixelband style <name>` | `original`, `gameboy`, `pico8`, `mono` or `sepia` |
@@ -72,10 +72,15 @@ Each scene is drawn from code, not a video, and reacts to what Claude is doing:
 
 | scene | idle | while Claude works | when it finishes |
 |---|---|---|---|
+| `creation` | Michelangelo's hands, a spark glowing in the gap between the fingertips | the room dims and the spark blazes and crackles | light floods out in a ring |
 | `city` | rain, windows switching on and off, flickering neon, a wet street | the rain gets heavier | lightning |
 | `space` | stars drifting past a ringed planet | warp speed | a hyperspace flash |
 | `aurora` | northern lights over mountains and pines | brighter, faster curtains | a bright pulse |
 | `fire` | low flames over your terminal's own background | the flames climb | a burst of embers |
+
+`creation` is built from Michelangelo's *The Creation of Adam* (c. 1511), which is in the public
+domain, via [Wikimedia Commons](https://commons.wikimedia.org/wiki/File:Michelangelo_-_Creation_of_Adam_(cropped).jpg).
+The plugin ships only a small 256-colour strip of the arms, made by `tools/make_creation.py`.
 
 The styles work on scenes too, so `/pixelband scene city` plus `/pixelband style gameboy` is a
 four-green rainy city.
