@@ -424,6 +424,15 @@ describe('menu', () => {
     }
   })
 
+  test('the menu ends with a quiet link to star the repo', async ($, on) => {
+    world(on)
+    await $.session.start(SESSION)
+    await $.command.run(pix(''))
+    const menu = await $.ui.mount(PANE)
+    const link = await menu.find({ type: 'Link' })
+    expect(link?.props.href).toBe('https://github.com/furqan-khan07/pixelband')
+  })
+
   test('Done closes the pane', async ($, on) => {
     const w = world(on)
     await $.session.start(SESSION)

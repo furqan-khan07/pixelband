@@ -165,4 +165,6 @@ The decoders are checked pixel for pixel against Pillow, and against real `sips`
 photo path. For editor types, run `/plugin-types` inside Claude Code once. It writes the
 declarations to `.claude/types`, which `tsconfig.json` picks up.
 
+If pixelband makes your terminal a bit nicer, a star on the repo helps other people find it.
+
 MIT licensed, see [LICENSE](LICENSE).

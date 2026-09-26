@@ -63,6 +63,7 @@ const FIT_IF_TRANSPARENT = 0.15
 const MOVE_STEP = 0.08
 const KEY = 'art'
 const MENU = 'pixelband'
+const REPO_URL = 'https://github.com/furqan-khan07/pixelband'
 const IMAGE_FILE = /\.(png|jpe?g|heic|heif|webp|gif|bmp|tiff?|avif)$/i
 const RECENT_DIRS = ['Downloads', 'Desktop', 'Pictures']
 
@@ -596,7 +597,7 @@ export const register: Register = (on) => {
   })
 
   on('ui.render', { component: 'Pane', requestId: MENU }, ($, e, next) => {
-    const { Box, Text, Button, Input } = $.ui.resolve(e) as any
+    const { Box, Text, Button, Input, Link } = $.ui.resolve(e) as any
     const ui = $.ui.resolve(e) as any
     const props = (e as any).props
     const width = Math.max(30, props.bodyColumns ?? 80)
@@ -698,6 +699,7 @@ export const register: Register = (on) => {
         h(Button, { key: 'revert', label: 'Undo changes', onPress: act(revert) }),
       ),
       note ? line(note, { dimColor: true }) : null,
+      row(h(Text, { dimColor: true }, 'like it? a star helps:'), h(Link, { href: REPO_URL, label: 'github.com/furqan-khan07/pixelband' })),
     )
   })
 
