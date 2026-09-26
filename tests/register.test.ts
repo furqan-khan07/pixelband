@@ -29,6 +29,7 @@ function world(on: any, files: Record<string, string> = {}, mtimes: Record<strin
   on('fs.stat', ($: any, e: any) => (e.path in files ? { value: { kind: 'file', size: 1, mtimeMs: mtimes[e.path] ?? 0, isLink: false } } : { deny: 'missing' }))
   on('ui.open', ($: any, e: any) => { panes.push(e); return { value: { isPlaced: true } } })
   on('ui.close', ($: any, e: any) => { closed.push(e); return { value: undefined } })
+  on('ui.panes', () => ({ value: panes.map((p) => ({ id: p.id, title: p.id, isShown: true, isFocused: false, isPlaced: true })) }))
   on('turn.start', ($: any, e: any) => ({ turnId: e.turnId }))
   on('turn.complete', ($: any, e: any) => ({ text: e.answer }))
   // What Claude Code itself draws in the band: nothing, which we stand in for with a marker.
@@ -59,7 +60,7 @@ describe('register', () => {
     const ui = await $.ui.mount(band())
     const art = await ui.find({ key: 'art' })
     expect(art?.type).toBe('Raster')
-    expect(art?.props.rows).toBe(10)      // default 12 rows, capped by the 10 the band is given
+    expect(art?.props.rows).toBe(4)       // auto height: about a quarter of the 10 rows the band may take, at least 4
     expect(art?.props.columns).toBe(80)   // the whole width of the band
     await ui.unmount()
   })
@@ -188,7 +189,7 @@ describe('layout', () => {
     expect(((await $.command.run(pix('status'))) as any).text).toMatch(/, banner, original,/)
     const ui = await $.ui.mount(band())
     const art = await ui.find({ key: 'art' })
-    expect([art?.props.columns, art?.props.rows]).toEqual([80, 10])
+    expect([art?.props.columns, art?.props.rows]).toEqual([80, 4])
     const cells = cellsOf(art?.props.cells as string)
     expect(cells[0]).not.toBe(0x20)                               // no empty margin: it starts at the left edge
     await ui.unmount()
@@ -360,9 +361,9 @@ describe('menu', () => {
     await $.command.run(pix(''))
     await settle()
     const menu = await $.ui.mount(PANE)
-    const buttons = await menu.findAll({ type: 'Button', text: /\.png/ })
-    expect(buttons.map((b) => b.props.label)).toEqual(['new.png', 'old.png'])
-    await menu.press({ key: 'recent:1' })
+    const recent = await menu.find({ key: 'recent' })
+    expect((recent?.props.options as any[]).slice(1).map((o) => o.label)).toEqual(['new.png', 'old.png'])
+    await menu.select({ key: 'recent', value: '/Users/me/Downloads/old.png' })
     await settle()
     expect(await text($.command.run(pix('status')))).toMatch(/^showing old\.png/)
   })
@@ -377,10 +378,10 @@ describe('menu', () => {
     await menu.select({ key: 'source', value: 'scene:city' })
     await menu.press({ key: 'rows+' })
     await settle()
-    expect(await text($.command.run(pix('status')))).toMatch(/^showing the city scene \(global\), gameboy, 13 rows/)
+    expect(await text($.command.run(pix('status')))).toMatch(/^showing the city scene \(global\), gameboy, 9 rows/)
     await menu.press({ key: 'revert' })
     await settle()
-    expect(await text($.command.run(pix('status')))).toMatch(/^showing photo\.png \(global\), banner, original, 12 rows/)
+    expect(await text($.command.run(pix('status')))).toMatch(/^showing photo\.png \(global\), banner, original, auto height/)
   })
 
   test('where: move the banner to just this project and back', async ($, on) => {
@@ -397,6 +398,32 @@ describe('menu', () => {
     expect(await text($.command.run(pix('status')))).toMatch(/\(global\)/)
   })
 
+  test('the menu says how to take the keyboard when it does not have it, and asks for it again', async ($, on) => {
+    const w = world(on)
+    await $.session.start(SESSION)
+    await $.command.run(pix(''))
+    const menu = await $.ui.mount({ ...PANE, props: { ...PANE.props, isFocused: false } })
+    expect(await menu.find({ type: 'Text', text: /ctrl\+x then tab/ })).toBeDefined()
+    await menu.redraw({ ...PANE.props, isFocused: true })
+    expect(await menu.find({ type: 'Text', text: /Enter picks/ })).toBeDefined()
+    await w.clock.advance(300)
+    await settle()
+    expect(w.panes.length).toBe(2)            // opened, then asked for the keyboard once more
+  })
+
+  test('no row is wider than the pane (a wrapped row garbles the terminal)', async ($, on) => {
+    world(on, { '/Users/me/Downloads/Screenshot 2026-09-25 at 9.14.07 PM with a very long name indeed.png': IMAGES.rgb8.png! })
+    await $.session.start(SESSION)
+    await $.command.run(pix('set "/Users/me/Downloads/Screenshot 2026-09-25 at 9.14.07 PM with a very long name indeed.png"'))
+    await $.command.run(pix(''))
+    await settle()
+    const menu = await $.ui.mount({ ...PANE, props: { ...PANE.props, bodyColumns: 50 } })
+    for (const t of await menu.findAll({ type: 'Text' })) expect(String(t.text).length).toBeLessThanOrEqual(50)
+    for (const sel of await menu.findAll({ type: 'Select' })) {
+      for (const o of sel.props.options as any[]) expect(String(o.label ?? o.value).length + 10).toBeLessThanOrEqual(50)
+    }
+  })
+
   test('Done closes the pane', async ($, on) => {
     const w = world(on)
     await $.session.start(SESSION)
@@ -405,5 +432,63 @@ describe('menu', () => {
     await menu.press({ key: 'done' })
     await settle()
     expect(w.closed[0]).toMatchObject({ id: 'pixelband' })
+  })
+})
+
+describe('height', () => {
+  const tall = (isWorking = false) => ({ ...band(isWorking, 29) })
+  const rowsOf = async (ui: any) => (await ui.find({ key: 'art' }))?.props.rows
+
+  test('auto height is about a quarter of the terminal', async ($, on) => {
+    world(on, { '/photo.png': IMAGES.rgb8.png! })
+    await $.session.start(SESSION)
+    await $.command.run(pix('set /photo.png'))
+    const ui = await $.ui.mount(tall())
+    expect(await rowsOf(ui)).toBe(8)
+    expect(await text($.command.run(pix('size 12')))).toMatch(/^12 rows tall/)
+    await ui.redraw()
+    expect(await rowsOf(ui)).toBe(12)
+    expect(await text($.command.run(pix('size auto')))).toBe('auto height: about a quarter of the terminal.')
+    await ui.redraw()
+    expect(await rowsOf(ui)).toBe(8)
+    await ui.unmount()
+  })
+
+  test('while Claude works the band slides down to a slim strip, then grows back', async ($, on) => {
+    const w = world(on, { '/photo.png': IMAGES.rgb8.png! })
+    await $.session.start(SESSION)
+    await $.command.run(pix('set /photo.png'))
+    const ui = await $.ui.mount(tall())
+    await w.clock.advance(1000)
+    await $.turn.start({ prompt: 'hi', turnId: 't1' } as any)
+    await w.clock.advance(80)
+    await ui.redraw(tall(true).props)
+    expect(await rowsOf(ui)).toBe(6)                 // gliding: two rows a frame
+    await w.clock.advance(400)
+    await ui.redraw(tall(true).props)
+    expect(await rowsOf(ui)).toBe(3)
+    await $.turn.complete(complete('answer') as any)
+    await w.clock.advance(1500)
+    await ui.redraw(tall(false).props)
+    expect(await rowsOf(ui)).toBe(8)
+    await ui.unmount()
+  })
+
+  test('or it can hide while Claude works, or stay full size', async ($, on) => {
+    const w = world(on, { '/photo.png': IMAGES.rgb8.png! })
+    await $.session.start(SESSION)
+    await $.command.run(pix('set /photo.png'))
+    expect(await text($.command.run(pix('working hide')))).toMatch(/hides/)
+    const ui = await $.ui.mount(tall())
+    await $.turn.start({ prompt: 'hi', turnId: 't1' } as any)
+    await w.clock.advance(1000)
+    await ui.redraw(tall(true).props)
+    expect(await ui.find({ key: 'art' })).toBeUndefined()
+    expect(await ui.find({ type: 'Text', text: 'core' })).toBeDefined()
+    expect(await text($.command.run(pix('working full')))).toMatch(/stays full size/)
+    await ui.redraw(tall(true).props)
+    expect(await rowsOf(ui)).toBe(8)
+    expect(await text($.command.run(pix('working sideways')))).toMatch(/^Usage/)
+    await ui.unmount()
   })
 })

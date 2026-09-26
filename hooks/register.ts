@@ -31,7 +31,9 @@ import { STYLES, stylize, type Style } from './styles'
 
 type Layout = 'auto' | 'banner' | 'fit'
 type Scope = 'project' | 'global'
-interface Config { rows: number; colors: number; enabled: boolean; style: Style; layout: Layout; animate: boolean }
+type WhileWorking = 'slim' | 'full' | 'hide'
+/** `rows` 0 means auto: about a quarter of the terminal. */
+interface Config { rows: number; colors: number; enabled: boolean; style: Style; layout: Layout; animate: boolean; whileWorking: WhileWorking }
 /**
  * What a scope's slot in the store holds: the image (RGB when fully opaque, a quarter smaller;
  * RGBA otherwise) and/or a scene. A scene wins while set, and keeps the image for switching back.
@@ -42,7 +44,11 @@ type Source =
   | { kind: 'image'; image: Rgba; name: string; clear: number }
   | { kind: 'scene'; scene: SceneName }
 
-const DEFAULTS: Config = { rows: 12, colors: 16, enabled: true, style: 'original', layout: 'auto', animate: true }
+const DEFAULTS: Config = { rows: 0, colors: 16, enabled: true, style: 'original', layout: 'auto', animate: true, whileWorking: 'slim' }
+/** How tall the band gets while Claude works, in 'slim' mode: out of the way, still animating. */
+const SLIM_ROWS = 3
+/** Rows the band grows or shrinks by per frame when it changes height. */
+const ROW_STEP = 2
 /** Longest side of the copy we keep; wide enough for a full-width banner. The store caps at 4 MiB total. */
 const STORED_MAX_SIDE = 320
 const MAX_COLS = 250
@@ -56,6 +62,9 @@ const MENU = 'pixelband'
 const IMAGE_FILE = /\.(png|jpe?g|heic|heif|webp|gif|bmp|tiff?|avif)$/i
 const RECENT_DIRS = ['Downloads', 'Desktop', 'Pictures']
 
+/** Where each scene's slim strip looks, as a fraction of its height: windows over the street, the planet... */
+const SLIM_FOCUS: Record<SceneName, number> = { city: 0.66, space: 0.58, aurora: 0.5, fire: 0.7 }
+
 export const SCENE_LABELS: Record<SceneName, string> = {
   city: 'rain on a city at night',
   space: 'stars and a ringed planet',
@@ -64,6 +73,8 @@ export const SCENE_LABELS: Record<SceneName, string> = {
 }
 
 const clampInt = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, Math.round(v)))
+/** Auto height: about a quarter of what the band may take, 4 to 8 rows. */
+const autoRows = (maxRows: number) => clampInt(maxRows * 0.28, 4, 8)
 
 /**
  * The engine calls needed outside a hook's own `$`: the animation timer and the menu's buttons run
@@ -83,6 +94,7 @@ interface Host {
   stat: (path: string) => Promise<unknown>
   open: () => Promise<unknown>
   close: () => Promise<unknown>
+  panes: () => Promise<unknown>
   io: Io
 }
 
@@ -111,6 +123,9 @@ export const register: Register = (on) => {
   let timer: { cancel: () => void } | null = null
   let sceneT = 0
   let energy = 0
+  /** The band's size limits from its last render, and how many rows it shows right now. */
+  let limits: { cols: number; maxRows: number } | null = null
+  let shownRows = -1
 
   // The menu's own state.
   let note = ''
@@ -190,16 +205,22 @@ export const register: Register = (on) => {
     return art
   }
 
-  /** This moment's frame of a scene, run through the style if one is picked. */
+  /**
+   * This moment's frame of a scene, run through the style if one is picked. A scene always renders
+   * at the band's full height; a shorter band (slim while Claude works) shows the most telling rows.
+   */
   function sceneArt(rows: number, cols: number): Art | null {
     if (source?.kind !== 'scene') return null
     const w = cols, h = rows * 2
+    const fullH = Math.max(h, fullRows() * 2)
     const flash = mood === 'done' ? ticks * FRAME_MS : null
-    const key = `${source.scene}|${w}x${h}|${sceneT}|${flash}|${config.style}|${config.colors}`
+    const key = `${source.scene}|${w}x${h}/${fullH}|${sceneT}|${flash}|${config.style}|${config.colors}`
     if (sceneCache?.key === key) return sceneCache.art
-    const rkey = `${source.scene}|${w}x${h}`
-    if (!renderer || rendererKey !== rkey) { renderer = makeScene(source.scene, w, h); rendererKey = rkey }
-    const px = renderer({ t: sceneT, energy, flash })
+    const rkey = `${source.scene}|${w}x${fullH}`
+    if (!renderer || rendererKey !== rkey) { renderer = makeScene(source.scene, w, fullH); rendererKey = rkey }
+    const whole = renderer({ t: sceneT, energy, flash })
+    const top = Math.min(fullH - h, Math.max(0, Math.round(SLIM_FOCUS[source.scene] * fullH - h / 2)))
+    const px = top === 0 && h === fullH ? whole : whole.slice(top * w, (top + h) * w)
     let a: Art = { w, h, px }
     if (config.style !== 'original') {
       const data = new Uint8Array(w * h * 4)
@@ -232,8 +253,21 @@ export const register: Register = (on) => {
       .catch(() => { /* band gone or resized: the next render fixes it */ })
   }
 
+  /** The band's full height for the current terminal. */
+  const fullRows = () => (limits ? Math.min(config.rows || autoRows(limits.maxRows), limits.maxRows, Math.floor(MAX_CELLS / limits.cols)) : 0)
+
+  /** Rows the band wants: its full height, or slim/hidden while Claude works. */
+  function targetRows(): number {
+    if (!limits) return 0
+    const full = fullRows()
+    if (!working || config.whileWorking === 'full') return full
+    return config.whileWorking === 'hide' ? 0 : Math.min(SLIM_ROWS, full)
+  }
+
+  const resizing = () => limits !== null && config.enabled && shownRows !== targetRows()
+
   const animating = () =>
-    mood !== 'idle' || (source?.kind === 'scene' && config.enabled && config.animate && band !== null)
+    mood !== 'idle' || resizing() || (source?.kind === 'scene' && config.enabled && config.animate && band !== null)
 
   function stopTimer() { timer?.cancel(); timer = null }
 
@@ -244,6 +278,11 @@ export const register: Register = (on) => {
 
   function tick() {
     ticks++
+    if (resizing()) {
+      const target = targetRows()
+      shownRows = shownRows < target ? Math.min(target, shownRows + ROW_STEP) : Math.max(target, shownRows - ROW_STEP)
+      redraw() // a new height needs a real render, not a blit
+    }
     if (source?.kind === 'scene' && config.animate) {
       sceneT += FRAME_MS
       energy += ((working ? 1 : 0) - energy) * 0.1
@@ -262,7 +301,12 @@ export const register: Register = (on) => {
   // ---------------------------------------------------------------------------------------------
   // Actions, shared by the commands and the menu. Each returns what to tell the person.
 
-  async function save() { await host?.set('config', config); art = null; sceneCache = null; redraw(); syncTimer() }
+  async function save() {
+    await host?.set('config', config)
+    art = null; sceneCache = null
+    if (limits) shownRows = targetRows() // a size picked by hand applies at once; only turns glide
+    redraw(); syncTimer()
+  }
   async function saveView() { if (scope) await host?.set(viewKeyFor(scope), view); art = null; redraw() }
 
   async function writeSlot(s: Scope, value: Stored): Promise<string | null> {
@@ -356,8 +400,17 @@ export const register: Register = (on) => {
   }
 
   async function setRows(n: number): Promise<string> {
-    config.rows = clampInt(n, 2, 24); await save()
-    return `${config.rows} rows tall (${config.rows * 2} pixels), as much as the terminal allows.`
+    config.rows = n <= 0 ? 0 : clampInt(n, 2, 24); await save()
+    return config.rows ? `${config.rows} rows tall (${config.rows * 2} pixels), as much as the terminal allows.` : 'auto height: about a quarter of the terminal.'
+  }
+
+  const rowsNow = () => config.rows || autoRows(limits?.maxRows ?? 29)
+
+  async function setWhileWorking(mode: string): Promise<string> {
+    if (!['slim', 'full', 'hide'].includes(mode)) return 'Usage: /pixelband working slim|full|hide'
+    config.whileWorking = mode as WhileWorking; await save()
+    return mode === 'slim' ? `while Claude works the band shrinks to ${SLIM_ROWS} rows, then grows back.`
+      : mode === 'hide' ? 'while Claude works the band hides, then comes back.' : 'the band stays full size while Claude works.'
   }
 
   async function setColors(n: number): Promise<string> {
@@ -406,6 +459,13 @@ export const register: Register = (on) => {
     note = ''
     await host.open()
     findRecent().catch(() => { /* recent images are a nicety */ })
+    // The keyboard only goes to a pane when Claude Code can spare it; ask once more a moment later.
+    host.after(250, () => {
+      Promise.resolve(host?.panes()).then((list) => {
+        const pane = ((list as { id: string; isFocused: boolean }[]) ?? []).find((p) => p.id === MENU)
+        if (pane && !pane.isFocused) return host?.open()
+      }).catch(() => { /* the hint in the menu covers it */ })
+    })
   }
 
   async function revert(): Promise<string> {
@@ -443,6 +503,7 @@ export const register: Register = (on) => {
       stat: (path) => $.fs.stat(path),
       open: () => $.ui.open({ id: MENU, title: 'pixelband', focus: true, closeOnEscape: true, rows: 14 }),
       close: () => $.ui.close({ id: MENU }),
+      panes: () => $.ui.panes(),
       io: {
         readBase64: (path) => $.fs.read(path, { as: 'bytes' }),
         tmpdir: () => $.env.get('TMPDIR'),
@@ -463,7 +524,7 @@ export const register: Register = (on) => {
   })
 
   on('turn.start', ($, e, next) => {
-    if (!(e as any).agentId) { working = true; if (mood !== 'working') setMood('working') }
+    if (!(e as any).agentId) { working = true; if (mood !== 'working') setMood('working'); else syncTimer() }
     return next(e)
   })
 
@@ -486,16 +547,18 @@ export const register: Register = (on) => {
       return h(Text, { dimColor: true }, 'pixelband · /pixelband to pick an image or scene')
     }
     const cols = Math.max(1, Math.min(props.bodyColumns ?? 80, MAX_COLS))
-    const rows = Math.min(config.rows, props.maxRows ?? config.rows, Math.floor(MAX_CELLS / cols))
+    limits = { cols, maxRows: Math.max(1, props.maxRows ?? 24) }
+    // Catch up if a turn event was missed.
+    if (props.isWorking && !working) { working = true; if (mood === 'idle') setMood('working') }
+    if (!props.isWorking && working) { working = false; if (mood === 'working') setMood('idle') }
+    if (shownRows < 0) shownRows = targetRows()
+    const rows = Math.min(shownRows, limits.maxRows, Math.floor(MAX_CELLS / cols))
     if (rows < 1) { band = null; syncTimer(); return next(e) }
 
     // A fit image may be shorter than the band; a banner or scene fills it.
     const drawnRows = source.kind === 'image' ? rowsFor(imageArt(rows, cols)?.h ?? rows * 2) : rows
     band = { requestId: (e as any).requestId, columns: cols, rows: drawnRows, want: { rows, cols } }
 
-    // Catch up if a turn event was missed.
-    if (props.isWorking && mood === 'idle') { working = true; setMood('working') }
-    if (!props.isWorking && mood === 'working') { working = false; setMood('idle') }
     syncTimer()
 
     const cells = currentCells()
@@ -505,69 +568,75 @@ export const register: Register = (on) => {
 
   on('ui.render', { component: 'Pane', requestId: MENU }, ($, e, next) => {
     const { Box, Text, Button, Select, Input } = $.ui.resolve(e) as any
+    const props = (e as any).props
+    const width = Math.max(30, props.bodyColumns ?? 80)
+    const fitText = (t: string, n: number) => (t.length > n ? `${t.slice(0, Math.max(1, n - 1))}…` : t)
+    // Every row stays on one line: a row that wraps makes the terminal redraw leave stale copies behind.
     const row = (...kids: unknown[]) => h(Box, { flexDirection: 'row', columnGap: 1 }, ...kids)
+    const line = (t: string, style: object = {}) => h(Text, { wrap: 'truncate-end', ...style }, fitText(t, width))
     const s = here()
     const showing = source?.kind === 'scene' ? `scene:${source.scene}` : source ? 'image' : 'none'
     const options = [
-      ...(imageName ? [{ value: 'image', label: `your image (${imageName})` }] : []),
+      ...(imageName ? [{ value: 'image', label: fitText(`your image (${imageName})`, width - 12) }] : []),
       ...SCENES.map((n) => ({ value: `scene:${n}`, label: `${n}: ${SCENE_LABELS[n]}` })),
     ]
-    if (showing === 'none') options.unshift({ value: 'none', label: 'nothing yet: pick a scene or add an image' })
+    if (showing === 'none') options.unshift({ value: 'none', label: 'nothing yet: pick a scene or an image' })
 
     return h(Box, { flexDirection: 'column' },
-      row(h(Text, { bold: true }, 'pixelband'), h(Text, { dimColor: true }, 'changes show in the band right away · Esc closes')),
+      props.isFocused
+        ? line('Tab / ↑↓ move · Enter picks · Esc closes · changes show in the band live', { dimColor: true })
+        : line('press ctrl+x then tab to use this menu · Esc closes', { color: 'yellow' }),
       h(Select, {
-        key: 'source', label: 'Show   ', options, value: showing,
+        key: 'source', label: 'Show     ', options, value: showing, autoFocus: true,
         onSelect: (v: string) => act(() => (v === 'image' ? showImage() : v.startsWith('scene:') ? setScene(v.slice(6), s) : Promise.resolve('')))(),
       }),
       h(Input, {
-        key: 'path', label: 'Image  ', placeholder: 'drag an image here, or type its path', submitLabel: 'use it',
+        key: 'path', label: 'Image    ', placeholder: 'drag an image here, or type its path', submitLabel: 'use it',
         onSubmit: (v: string) => act(() => setImage(v, s))(),
       }),
       recent.length
-        ? row(h(Text, { dimColor: true }, 'Recent '), ...recent.map((f, i) =>
-          h(Button, { key: `recent:${i}`, hotkey: String(i + 1), plain: true, dimColor: true, label: f.name.length > 22 ? `${f.name.slice(0, 20)}…` : f.name, onPress: act(() => setImage(f.path, s)) })))
+        ? h(Select, {
+          key: 'recent', label: 'Recent   ', value: '',
+          options: [{ value: '', label: `${recent.length} newest in Downloads, Desktop, Pictures` }, ...recent.map((f) => ({ value: f.path, label: fitText(f.name, width - 14) }))],
+          onSelect: (v: string) => { if (v) act(() => setImage(v, s))() },
+        })
         : null,
       h(Select, {
-        key: 'style', label: 'Style  ', value: config.style,
+        key: 'style', label: 'Style    ', value: config.style,
         options: STYLES.map((v) => ({ value: v })),
         onSelect: (v: string) => act(() => setStyle(v))(),
       }),
       row(
-        h(Text, {}, 'Size   '),
-        h(Button, { key: 'rows-', label: '-', onPress: act(() => setRows(config.rows - 1)) }),
-        h(Text, {}, `${config.rows} rows`),
-        h(Button, { key: 'rows+', label: '+', onPress: act(() => setRows(config.rows + 1)) }),
-        h(Text, {}, '  Colours'),
-        h(Button, { key: 'colors-', label: '-', onPress: act(() => setColors(config.colors - 2)) }),
-        h(Text, {}, `${config.colors}`),
-        h(Button, { key: 'colors+', label: '+', onPress: act(() => setColors(config.colors + 2)) }),
+        h(Text, {}, 'Height   '),
+        h(Button, { key: 'rows-', label: '-', onPress: act(() => setRows(rowsNow() - 1)) }),
+        h(Text, {}, config.rows ? `${config.rows} rows` : `auto (${rowsNow()})`),
+        h(Button, { key: 'rows+', label: '+', onPress: act(() => setRows(rowsNow() + 1)) }),
+        config.rows ? h(Button, { key: 'rows-auto', label: 'auto', plain: true, dimColor: true, onPress: act(() => setRows(0)) }) : null,
       ),
+      h(Select, {
+        key: 'working', label: 'Working  ', value: config.whileWorking,
+        options: [
+          { value: 'slim', label: `shrink to ${SLIM_ROWS} rows while Claude works` },
+          { value: 'hide', label: 'hide while Claude works' },
+          { value: 'full', label: 'stay full size' },
+        ],
+        onSelect: (v: string) => act(() => setWhileWorking(v))(),
+      }),
       source?.kind === 'image'
         ? row(
-          h(Text, {}, 'Crop   '),
+          h(Text, {}, 'Crop     '),
           h(Button, { key: 'up', hotkey: 'w', plain: true, label: '↑', onPress: act(() => move(0, -MOVE_STEP)) }),
           h(Button, { key: 'left', hotkey: 'a', plain: true, label: '←', onPress: act(() => move(-MOVE_STEP, 0)) }),
           h(Button, { key: 'down', hotkey: 's', plain: true, label: '↓', onPress: act(() => move(0, MOVE_STEP)) }),
           h(Button, { key: 'right', hotkey: 'd', plain: true, label: '→', onPress: act(() => move(MOVE_STEP, 0)) }),
-          h(Button, { key: 'zoom-in', hotkey: 'z', plain: true, label: 'zoom in', onPress: act(() => zoom('in')) }),
-          h(Button, { key: 'zoom-out', hotkey: 'x', plain: true, label: 'zoom out', onPress: act(() => zoom('out')) }),
+          h(Button, { key: 'zoom-in', hotkey: 'z', plain: true, label: 'in', onPress: act(() => zoom('in')) }),
+          h(Button, { key: 'zoom-out', hotkey: 'x', plain: true, label: 'out', onPress: act(() => zoom('out')) }),
           h(Button, { key: 'reset', hotkey: 'r', plain: true, label: 'reset', onPress: act(() => zoom('reset')) }),
         )
-        : null,
-      source?.kind === 'image'
-        ? h(Select, {
-          key: 'layout', label: 'Layout ', value: config.layout,
-          options: [{ value: 'auto', label: `auto (${layoutOf()})` }, { value: 'banner', label: 'banner: fill the width' }, { value: 'fit', label: 'fit: show it all' }],
-          onSelect: (v: string) => act(() => setLayout(v))(),
-        })
-        : null,
-      source?.kind === 'scene'
-        ? row(h(Text, {}, 'Motion '), h(Button, { key: 'animate', label: config.animate ? 'animating: pause' : 'paused: animate', onPress: act(() => setAnimate(!config.animate)) }))
-        : null,
+        : row(h(Text, {}, 'Motion   '), h(Button, { key: 'animate', label: config.animate ? 'pause' : 'animate', onPress: act(() => setAnimate(!config.animate)) }), h(Text, { dimColor: true }, config.animate ? 'moving' : 'paused')),
       source
         ? h(Select, {
-          key: 'scope', label: 'Where  ', value: s,
+          key: 'scope', label: 'Where    ', value: s,
           options: [{ value: 'global', label: 'every project' }, { value: 'project', label: 'only this project' }],
           onSelect: (v: string) => act(() => setScope(v as Scope))(),
         })
@@ -577,7 +646,7 @@ export const register: Register = (on) => {
         h(Button, { key: 'toggle', label: config.enabled ? 'Hide band' : 'Show band', onPress: act(() => setEnabled(!config.enabled)) }),
         h(Button, { key: 'revert', label: 'Undo changes', onPress: act(revert) }),
       ),
-      note ? h(Text, { dimColor: true }, note) : null,
+      note ? line(note, { dimColor: true }) : null,
     )
   })
 
@@ -599,9 +668,12 @@ export const register: Register = (on) => {
       case 'scene':
         return reply(await setScene(arg.toLowerCase(), isHere ? 'project' : 'global'))
       case 'size': {
+        if (arg.toLowerCase() === 'auto') return reply(await setRows(0))
         const n = Number(arg)
-        return reply(Number.isFinite(n) && arg ? await setRows(n) : 'Usage: /pixelband size <rows>, from 2 to 24.')
+        return reply(Number.isFinite(n) && arg ? await setRows(n) : 'Usage: /pixelband size <rows> (2 to 24) or size auto.')
       }
+      case 'working':
+        return reply(await setWhileWorking(arg.toLowerCase()))
       case 'style':
         return reply(await setStyle(arg.toLowerCase()))
       case 'layout':
@@ -643,8 +715,8 @@ export const register: Register = (on) => {
       case 'help': {
         const where = scope === 'project' ? 'this project' : 'global'
         const status = !source ? 'nothing showing yet'
-          : `showing ${source.kind === 'scene' ? `the ${source.scene} scene` : source.name} (${where})${source.kind === 'image' ? `, ${layoutOf()}` : ''}, ${config.style}, ${config.rows} rows, ${config.enabled ? 'on' : 'off'}`
-        return reply(`${status}.\n/pixelband opens the menu. Or: set <image> [--here] · scene <${SCENES.join('|')}> · style <${STYLES.join('|')}> · layout <banner|fit|auto> · move <up|down|left|right> · zoom <in|out|reset> · size <rows> · colors <n> · animate <on|off> · on · off · clear [--here] · demo <working|done|error|intro>`)
+          : `showing ${source.kind === 'scene' ? `the ${source.scene} scene` : source.name} (${where})${source.kind === 'image' ? `, ${layoutOf()}` : ''}, ${config.style}, ${config.rows ? `${config.rows} rows` : 'auto height'}, ${config.enabled ? 'on' : 'off'}`
+        return reply(`${status}.\n/pixelband opens the menu. Or: set <image> [--here] · scene <${SCENES.join('|')}> · style <${STYLES.join('|')}> · layout <banner|fit|auto> · move <up|down|left|right> · zoom <in|out|reset> · size <rows|auto> · working <slim|full|hide> · colors <n> · animate <on|off> · on · off · clear [--here] · demo <working|done|error|intro>`)
       }
       default:
         return reply(`unknown command "${sub}". /pixelband help lists them, or /pixelband alone opens the menu.`)
