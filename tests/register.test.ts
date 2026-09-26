@@ -326,7 +326,7 @@ describe('menu', () => {
     await $.command.run(pix(''))
     const menu = await $.ui.mount(PANE)
     const src = await menu.find({ key: 'source' })
-    expect((src?.props.options as any[]).map((o) => o.value)).toEqual(['none', 'scene:city', 'scene:space', 'scene:aurora', 'scene:fire'])
+    expect((src?.props.options as any[]).map((o) => o.value)).toEqual(['none', 'scene:city', 'scene:space', 'scene:aurora', 'scene:fire', 'scene:creation'])
     await menu.select({ key: 'source', value: 'scene:space' })
     await settle()
     expect(await text($.command.run(pix('status')))).toMatch(/^showing the space scene/)

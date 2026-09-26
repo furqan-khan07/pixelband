@@ -5,15 +5,19 @@
  *   space    stars drifting past a ringed planet; warp speed while Claude works
  *   aurora   northern lights over mountains and pines
  *   fire     a wall of fire (the classic Doom fire), flames climb while Claude works
+ *   creation Michelangelo's hands, and a spark jumping the gap between the fingertips
  *
  * A scene is made for one band size and then asked for frames. Each frame gets the time, an
  * `energy` from 0 (idle) to 1 (Claude working) that eases between the two, and `flash`: how long
  * ago a turn finished, which each scene celebrates its own way.
  */
+import { CREATION } from './creation-data'
 import { hash } from './effects'
-import { TRANSPARENT } from './pixelate'
+import { downscaleRegion, TRANSPARENT } from './pixelate'
+import type { Rgba } from './png'
+import { stylize } from './styles'
 
-export const SCENES = ['city', 'space', 'aurora', 'fire'] as const
+export const SCENES = ['city', 'space', 'aurora', 'fire', 'creation'] as const
 export type SceneName = (typeof SCENES)[number]
 
 export interface SceneInput {
@@ -40,6 +44,7 @@ export function makeScene(name: SceneName, w: number, h: number): Renderer {
     case 'space': return space(w, h)
     case 'aurora': return aurora(w, h)
     case 'fire': return fire(w, h)
+    case 'creation': return creation(w, h)
   }
 }
 
@@ -469,5 +474,114 @@ function fire(w: number, h: number): Renderer {
       if (x >= 0 && x < w && y >= 0 && y < h && heat[y * w + x] < MAX * 0.4) out[y * w + x] = p < 0.6 ? 0xffb347 : 0xc05020
     }
     return out
+  }
+}
+
+// ---------------------------------------------------------------------------------------------
+// creation: Michelangelo's hands (public domain), with a spark in the gap
+
+let painting: Rgba | null = null
+
+/** The painting strip, unpacked from its palette the first time it's needed. */
+function paintingStrip(): Rgba {
+  if (painting) return painting
+  const pal = Uint8Array.fromBase64(CREATION.palette), idx = Uint8Array.fromBase64(CREATION.indices)
+  const data = new Uint8Array(idx.length * 4)
+  for (let i = 0; i < idx.length; i++) {
+    const p = idx[i] * 3
+    data[i * 4] = pal[p]; data[i * 4 + 1] = pal[p + 1]; data[i * 4 + 2] = pal[p + 2]; data[i * 4 + 3] = 255
+  }
+  painting = { width: CREATION.width, height: CREATION.height, data }
+  return painting
+}
+
+function creation(w: number, h: number): Renderer {
+  const src = paintingStrip()
+  // Zoomed in on the hands for a small band, showing more of the arms as it gets wider.
+  const frac = Math.min(0.5, Math.max(0.22, 0.12 + w / 600))
+  let cw = frac * CREATION.fullWidth, ch = (cw * h) / w
+  if (ch > src.height) { ch = src.height; cw = (ch * w) / h }
+  if (cw > src.width) { cw = src.width; ch = (cw * h) / w }
+  const x0 = Math.min(src.width - cw, Math.max(0, CREATION.gap.x - cw / 2))
+  const y0 = Math.min(src.height - ch, Math.max(0, CREATION.gap.y - ch / 2))
+  const base = stylize(downscaleRegion(src, { x: x0, y: y0, w: cw, h: ch }, w, h), 'original', 16).px
+  const sx = ((CREATION.gap.x - x0) / cw) * w, sy = ((CREATION.gap.y - y0) / ch) * h
+  const SPARK: Rgb = [255, 122, 36], HOT: Rgb = [255, 214, 120], WHITE: Rgb = [255, 255, 255]
+  const scale = Math.max(1, h / 16)
+  let glow = 0
+
+  return ({ t, energy, flash }) => {
+    const c = new Canvas(w, h)
+    glow += (energy - glow) * 0.12
+    const f = pulse(flash)
+    const beat = 0.5 + 0.5 * Math.sin(t / 520)
+    // The fresco is pale, so a spark painted on it barely shows. Instead the scene is lit low and
+    // the spark lights the fingertips around it; while Claude works the room dims further.
+    const dim = 0.74 - glow * 0.2 + f * 0.26
+    const sigma = (5 + beat * 1.5 + glow * 5) * scale
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        const d2 = (x + 0.5 - sx) ** 2 + ((y + 0.5 - sy) * 1.3) ** 2
+        const light = Math.exp(-d2 / (2 * sigma * sigma))
+        const b = base[y * w + x], lit = dim + (1.08 - dim) * light
+        c.set(x, y, [((b >> 16) & 255) * lit, ((b >> 8) & 255) * lit, (b & 255) * lit])
+        c.mix(x, y, SPARK, light * (0.22 + glow * 0.18))
+      }
+    }
+    const radius = (2 + beat * 0.8 + glow * 1.8 + f * 6) * scale
+    const strength = 0.55 + beat * 0.2 + glow * 0.25 + f * 0.4
+
+    // the glow around the gap: orange falling off, a white-hot core
+    const reach = Math.ceil(radius * 1.6)
+    for (let y = Math.floor(sy - reach); y <= Math.ceil(sy + reach); y++) {
+      for (let x = Math.floor(sx - reach); x <= Math.ceil(sx + reach); x++) {
+        const d = Math.hypot(x + 0.5 - sx, y + 0.5 - sy)
+        if (d > radius * 1.6) continue
+        const k = Math.max(0, 1 - d / (radius * 1.6)) ** 2 * strength
+        c.mix(x, y, SPARK, k)
+        if (d < radius * 0.35) c.mix(x, y, d < radius * 0.18 ? WHITE : HOT, 0.9)
+      }
+    }
+    // a four-point twinkle every so often, all the time while Claude works
+    const tick = Math.floor(t / 80)
+    if (glow > 0.3 || hash(tick >> 2, 0, 111) < 0.3) {
+      const arm = Math.round((1.5 + glow * 2.5 + beat) * scale)
+      for (let k = 1; k <= arm; k++) {
+        const a = 0.8 * (1 - k / (arm + 1))
+        c.mix(Math.floor(sx) + k, Math.floor(sy), WHITE, a); c.mix(Math.floor(sx) - k, Math.floor(sy), WHITE, a)
+        c.mix(Math.floor(sx), Math.floor(sy) + k, WHITE, a * 0.8); c.mix(Math.floor(sx), Math.floor(sy) - k, WHITE, a * 0.8)
+      }
+    }
+    // while Claude works: little arcs crackling out from the spark, and embers drifting off
+    if (glow > 0.15) {
+      const arcs = 1 + Math.round(glow * 2)
+      for (let a = 0; a < arcs; a++) {
+        const ang = hash(tick, a, 113) * Math.PI * 2, len = (3 + hash(tick, a, 115) * 5) * scale
+        let x = sx, y = sy
+        for (let k = 0; k < len; k++) {
+          x += Math.cos(ang) + (hash(tick, a * 50 + k, 117) - 0.5) * 1.4
+          y += Math.sin(ang) * 0.6 + (hash(tick, a * 50 + k, 119) - 0.5) * 1.4
+          c.mix(Math.floor(x), Math.floor(y), HOT, glow * (1 - k / len))
+        }
+      }
+      for (let i = 0; i < 6; i++) {
+        const life = 900 + hash(i, 1, 121) * 600
+        const p = ((t + hash(i, 2, 121) * life) % life) / life
+        const ang = hash(i, 3, 121) * Math.PI * 2
+        c.mix(Math.floor(sx + Math.cos(ang) * p * 10 * scale), Math.floor(sy + Math.sin(ang) * p * 5 * scale), SPARK, glow * (1 - p))
+      }
+    }
+    // a finished turn: the light floods out from the gap in a ring
+    if (f > 0) {
+      const ring = (1 - f ** 0.5) * Math.max(w, h * 2) * 0.6
+      for (let y = 0; y < h; y++) {
+        for (let x = 0; x < w; x++) {
+          const d = Math.abs(Math.hypot(x + 0.5 - sx, (y + 0.5 - sy) * 1.5) - ring)
+          if (d < 2.5) c.mix(x, y, HOT, (1 - d / 2.5) * f * 0.8)
+          c.mix(x, y, [255, 214, 160], f * 0.25)
+        }
+      }
+    }
+    return c.pack()
   }
 }

@@ -65,13 +65,14 @@ const IMAGE_FILE = /\.(png|jpe?g|heic|heif|webp|gif|bmp|tiff?|avif)$/i
 const RECENT_DIRS = ['Downloads', 'Desktop', 'Pictures']
 
 /** Where each scene's slim strip looks, as a fraction of its height: windows over the street, the planet... */
-const SLIM_FOCUS: Record<SceneName, number> = { city: 0.66, space: 0.58, aurora: 0.5, fire: 0.7 }
+const SLIM_FOCUS: Record<SceneName, number> = { city: 0.66, space: 0.58, aurora: 0.5, fire: 0.7, creation: 0.5 }
 
 export const SCENE_LABELS: Record<SceneName, string> = {
   city: 'rain on a city at night',
   space: 'stars and a ringed planet',
   aurora: 'northern lights',
   fire: 'a wall of fire',
+  creation: "Michelangelo's hands and a spark",
 }
 
 const clampInt = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, Math.round(v)))
@@ -594,7 +595,7 @@ export const register: Register = (on) => {
     const showing = source?.kind === 'scene' ? `scene:${source.scene}` : source ? 'image' : 'none'
     const options = [
       ...(imageName ? [{ value: 'image', label: fitText(`your image (${imageName})`, width - 12) }] : []),
-      ...SCENES.map((n) => ({ value: `scene:${n}`, label: `${n}: ${SCENE_LABELS[n]}` })),
+      ...SCENES.map((n) => ({ value: `scene:${n}`, label: fitText(`${n}: ${SCENE_LABELS[n]}`, width - 12) })),
     ]
     if (showing === 'none') options.unshift({ value: 'none', label: 'nothing yet: pick a scene or an image' })
 
