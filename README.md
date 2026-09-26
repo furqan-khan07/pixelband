@@ -26,6 +26,9 @@ the menu's image field (your newest downloads and screenshots are listed there t
 style, size and crop. Every change shows in the band straight away, and **Undo changes** puts it
 all back.
 
+If the menu doesn't respond to keys, press **ctrl+x** then **tab** to give it the keyboard. Tab and
+the arrow keys move around it; Enter picks.
+
 Or skip the menu:
 
 ```
@@ -47,12 +50,20 @@ Once mods ship properly, it'll install like any other plugin.
 | `/pixelband move <up\|down\|left\|right> [steps]` | aim the crop at the part of the picture you want |
 | `/pixelband zoom <in\|out\|reset>` | zoom the crop in, up to 4x |
 | `/pixelband layout <auto\|banner\|fit>` | `banner` fills the whole width with a crop; `fit` shows the whole image, centred. `auto` picks `fit` for logos and sprites with see-through backgrounds |
-| `/pixelband size <rows>` | how tall the band is, 2 to 24 rows (two pixels per row) |
+| `/pixelband size <rows\|auto>` | how tall the band is, 2 to 24 rows (two pixels per row). `auto`, the default, is about a quarter of the terminal |
+| `/pixelband working <slim\|hide\|full>` | what the band does while Claude works: shrink to a 3-row strip (the default), hide, or stay full size |
 | `/pixelband colors <n>` | palette size for the `original` style, 2 to 32. Fewer colours reads more like pixel art |
 | `/pixelband animate on\|off` | pause a scene's motion (it still reacts to Claude) |
 | `/pixelband on` / `off` | show or hide it |
 | `/pixelband clear [--here]` | forget the image |
 | `/pixelband demo <mood>` | play `working`, `done`, `error` or `intro` on demand (good for screenshots) |
+
+## Staying out of the way
+
+While Claude is working, the band slides down to a slim 3-row strip so the output gets the room,
+and it grows back when the turn finishes. The effects still play in the strip. `/pixelband working
+hide` hides it during turns instead, and `/pixelband working full` keeps it full size. Claude Code
+also lets you collapse the band any time with its `[-]` mark or ctrl+x ctrl+a.
 
 ## Scenes
 
