@@ -351,7 +351,7 @@ export const register: Register = (on) => {
     renderer = null
     redraw()
     setMood('intro')
-    return `showing ${name}: ${SCENE_LABELS[name]}.`
+    return `showing ${name}: ${SCENE_LABELS[name]}${s === 'project' ? ' (this project)' : ''}.`
   }
 
   /** Back from a scene to the image kept in the same slot. */
@@ -690,9 +690,9 @@ export const register: Register = (on) => {
         await openMenu()
         return {}
       case 'set':
-        return reply(await setImage(arg, isHere ? 'project' : 'global'))
+        return reply(await setImage(arg, isHere ? 'project' : here()))
       case 'scene':
-        return reply(await setScene(arg.toLowerCase(), isHere ? 'project' : 'global'))
+        return reply(await setScene(arg.toLowerCase(), isHere ? 'project' : here()))
       case 'size': {
         if (arg.toLowerCase() === 'auto') return reply(await setRows(0))
         const n = Number(arg)

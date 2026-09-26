@@ -527,3 +527,13 @@ describe('256 colours', () => {
     await ui.unmount()
   })
 })
+
+describe('scope', () => {
+  test('a command changes what this project shows, even when it has its own banner', async ($, on) => {
+    world(on)
+    await $.session.start(SESSION)
+    await $.command.run(pix('scene city --here'))
+    expect(await text($.command.run(pix('scene creation')))).toBe("showing creation: Michelangelo's hands and a spark (this project).")
+    expect(await text($.command.run(pix('status')))).toMatch(/^showing the creation scene \(this project\)/)
+  })
+})
