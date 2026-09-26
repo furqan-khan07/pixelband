@@ -6,6 +6,8 @@
  *   aurora   northern lights over mountains and pines
  *   fire     a wall of fire (the classic Doom fire), flames climb while Claude works
  *   creation Michelangelo's hands, and a spark jumping the gap between the fingertips
+ *   matrix   green code raining down; it pours while Claude works
+ *   aquarium fish, bubbles and swaying weed; the fish dart about while Claude works
  *
  * A scene is made for one band size and then asked for frames. Each frame gets the time, an
  * `energy` from 0 (idle) to 1 (Claude working) that eases between the two, and `flash`: how long
@@ -17,7 +19,7 @@ import { downscaleRegion, TRANSPARENT } from './pixelate'
 import type { Rgba } from './png'
 import { stylize } from './styles'
 
-export const SCENES = ['city', 'space', 'aurora', 'fire', 'creation'] as const
+export const SCENES = ['city', 'space', 'aurora', 'fire', 'creation', 'matrix', 'aquarium'] as const
 export type SceneName = (typeof SCENES)[number]
 
 export interface SceneInput {
@@ -45,6 +47,8 @@ export function makeScene(name: SceneName, w: number, h: number): Renderer {
     case 'aurora': return aurora(w, h)
     case 'fire': return fire(w, h)
     case 'creation': return creation(w, h)
+    case 'matrix': return matrix(w, h)
+    case 'aquarium': return aquarium(w, h)
   }
 }
 
@@ -581,6 +585,145 @@ function creation(w: number, h: number): Renderer {
           c.mix(x, y, [255, 214, 160], f * 0.25)
         }
       }
+    }
+    return c.pack()
+  }
+}
+
+// ---------------------------------------------------------------------------------------------
+// matrix: green code rain
+
+function matrix(w: number, h: number): Renderer {
+  const HEAD: Rgb = [210, 255, 215], BRIGHT: Rgb = [40, 255, 90], DARK: Rgb = [0, 70, 25], BG: Rgb = [2, 8, 4]
+  // Each column runs its own streams: a speed, a trail length, a pause between drops.
+  const cols = Array.from({ length: w }, (_, x) => ({
+    speed: h * (0.55 + hash(x, 1, 131) * 0.9), // px per second
+    trail: Math.max(3, Math.round(h * (0.35 + hash(x, 2, 131) * 0.6))),
+    phase: hash(x, 3, 131),
+    active: hash(x, 4, 131),
+  }))
+  let pour = 0
+
+  return ({ t, energy, flash }) => {
+    const c = new Canvas(w, h)
+    pour += (energy - pour) * 0.1
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) c.set(x, y, BG)
+    const tick = Math.floor(t / 90)
+    for (let x = 0; x < w; x++) {
+      const col = cols[x]
+      if (col.active > 0.45 + pour * 0.4) continue // fewer columns at rest; nearly all of them while Claude works
+      const speed = col.speed * (1 + pour * 1.6)
+      const span = h + col.trail + h * 0.6 * (1 - pour) // the gap before the next drop
+      const head = ((t / 1000) * speed + col.phase * span) % span
+      for (let k = 0; k < col.trail; k++) {
+        const y = Math.floor(head) - k
+        if (y < 0 || y >= h) continue
+        const fade = 1 - k / col.trail
+        // The glyphs in a trail keep changing: some pixels flicker brighter or drop out.
+        const flick = hash(x, y * 31 + tick, 133)
+        if (flick < 0.12) continue
+        const tone = k === 0 ? HEAD : lerp(DARK, BRIGHT, fade ** 1.4 * (flick > 0.85 ? 1 : 0.8))
+        c.set(x, y, tone)
+      }
+    }
+    // a finished turn: a bright scan sweeps down the screen
+    const f = pulse(flash)
+    if (f > 0) {
+      const sy = (1 - f) * (h + 4) - 2
+      for (let y = 0; y < h; y++) {
+        const d = Math.abs(y - sy)
+        if (d < 3) for (let x = 0; x < w; x++) c.mix(x, y, HEAD, (1 - d / 3) * 0.8)
+      }
+      for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) c.mix(x, y, BRIGHT, f * 0.15)
+    }
+    return c.pack()
+  }
+}
+
+// ---------------------------------------------------------------------------------------------
+// aquarium: fish, bubbles and weed
+
+function aquarium(w: number, h: number): Renderer {
+  const sand = Math.max(1, Math.round(h * 0.12))
+  const floor = h - sand
+  const TOP: Rgb = [24, 104, 168], DEEP: Rgb = [6, 32, 78], SAND: Rgb = [196, 170, 112], SAND2: Rgb = [168, 142, 92]
+  const WEED: Rgb = [40, 150, 70], WEED2: Rgb = [24, 108, 52], BUBBLE: Rgb = [200, 232, 255]
+  const KINDS: { body: Rgb; stripe?: Rgb; fin: Rgb }[] = [
+    { body: [255, 128, 32], stripe: [255, 255, 255], fin: [230, 90, 20] },  // clownfish
+    { body: [60, 110, 230], stripe: [250, 220, 40], fin: [30, 60, 170] },   // blue tang
+    { body: [250, 220, 50], fin: [220, 170, 20] },                          // yellow tang
+    { body: [230, 70, 110], fin: [180, 40, 80] },                           // a pink one
+  ]
+  const weeds = Array.from({ length: Math.max(2, Math.round(w / 11)) }, (_, i) => ({
+    x: Math.floor(hash(i, 1, 141) * w), tall: Math.round(floor * (0.3 + hash(i, 2, 141) * 0.45)), phase: hash(i, 3, 141) * 6,
+  }))
+  const fish = Array.from({ length: Math.max(2, Math.round(w / 16)) }, (_, i) => ({
+    kind: KINDS[i % KINDS.length],
+    len: 4 + Math.floor(hash(i, 1, 143) * 3) + (h >= 24 ? 1 : 0),
+    y: 2 + hash(i, 2, 143) * Math.max(1, floor - 6),
+    speed: 3 + hash(i, 3, 143) * 5, // px per second
+    dir: hash(i, 4, 143) < 0.5 ? 1 : -1,
+    offset: hash(i, 5, 143) * (w + 20),
+    bob: hash(i, 6, 143) * 6,
+  }))
+  const vents = Array.from({ length: Math.max(1, Math.round(w / 30)) }, (_, i) => Math.floor(hash(i, 7, 143) * w))
+  let dart = 0, travelled = 0, lastT = 0
+
+  return ({ t, energy, flash }) => {
+    const c = new Canvas(w, h)
+    dart += (energy - dart) * 0.08
+    const dt = Math.max(0, Math.min(200, t - lastT)); lastT = t
+    travelled += (dt / 1000) * (1 + dart * 2.2)
+    // water, with slow shafts of light from the surface
+    for (let y = 0; y < floor; y++) {
+      for (let x = 0; x < w; x++) {
+        c.set(x, y, lerp(TOP, DEEP, y / Math.max(1, floor)))
+        const ray = Math.sin((x + y * 0.6) * 0.18 + t * 0.0006) * Math.sin((x - y * 0.3) * 0.07 - t * 0.0004)
+        if (ray > 0.55) c.mix(x, y, [120, 200, 240], (ray - 0.55) * 0.5 * (1 - y / floor))
+      }
+    }
+    // sand
+    for (let y = floor; y < h; y++) for (let x = 0; x < w; x++) c.set(x, y, hash(x, y, 145) < 0.3 ? SAND2 : SAND)
+    // weed, swaying from the root
+    for (const wd of weeds) {
+      for (let k = 0; k < wd.tall; k++) {
+        const sway = Math.sin(t * 0.0015 + wd.phase + k * 0.35) * (k / wd.tall) * 2.2
+        const x = Math.round(wd.x + sway), y = floor - 1 - k
+        c.set(x, y, k % 3 === 0 ? WEED2 : WEED)
+        if (k % 4 === 2) c.set(x + (k % 8 < 4 ? 1 : -1), y, WEED2)
+      }
+    }
+    // bubbles from the vents, more while Claude works and a burst when it finishes
+    const f = pulse(flash)
+    const per = 3 + Math.round(dart * 5 + f * 12)
+    for (const vx of vents) {
+      for (let i = 0; i < per; i++) {
+        const life = 2600 + hash(vx, i, 147) * 1600
+        const p = ((t + hash(vx, i, 149) * life) % life) / life
+        const y = Math.round(floor - 1 - p * floor)
+        const x = Math.round(vx + Math.sin(p * 9 + i) * 1.2 + (hash(vx, i, 151) - 0.5) * 4)
+        c.mix(x, y, BUBBLE, 0.75)
+      }
+    }
+    // fish
+    for (const fi of fish) {
+      const span = w + fi.len * 2 + 8
+      const pos = (((fi.offset + travelled * fi.speed * fi.dir) % span) + span) % span - fi.len - 4
+      const x0 = Math.round(pos)
+      const y0 = Math.round(fi.y + Math.sin(t * 0.0012 + fi.bob) * 1.2)
+      const flap = Math.floor(t / (180 - dart * 90)) % 2
+      const body = fi.kind.body, fin = fi.kind.fin
+      for (let k = 0; k < fi.len; k++) {
+        const x = fi.dir > 0 ? x0 + k : x0 + fi.len - 1 - k // k = 0 at the tail
+        const thick = k === 0 ? 0 : k === fi.len - 1 ? 0 : k < fi.len / 2 ? 1 : 1
+        for (let dy = -thick; dy <= thick; dy++) c.set(x, y0 + dy, k === 0 ? fin : body)
+        if (fi.kind.stripe && k === Math.floor(fi.len / 2)) for (let dy = -thick; dy <= thick; dy++) c.set(x, y0 + dy, fi.kind.stripe)
+      }
+      // the tail flaps; the eye looks where it's going
+      const tailX = fi.dir > 0 ? x0 - 1 : x0 + fi.len
+      c.set(tailX, y0 + (flap ? -1 : 1), fin)
+      const eyeX = fi.dir > 0 ? x0 + fi.len - 2 : x0 + 1
+      c.set(eyeX, y0 - 1 >= 0 && fi.len > 4 ? y0 : y0, [16, 16, 24])
     }
     return c.pack()
   }

@@ -49,7 +49,7 @@ Once mods ship properly, the flag won't be needed.
 | | |
 |---|---|
 | `/pixelband` | open the menu |
-| `/pixelband scene <name>` | an animated scene: `creation`, `city` (rain on a city at night), `space`, `aurora` or `fire` |
+| `/pixelband scene <name>` | an animated scene: `creation`, `city` (rain on a city at night), `space`, `aurora`, `fire`, `matrix` or `aquarium` |
 | `/pixelband set <image>` | use an image: PNG, JPEG, HEIC (iPhone photos), WebP and more. **Animated GIFs play**, looping, with their own timing |
 | `/pixelband set <image> --here` | use it for **this project only**, so each repo gets its own banner |
 | `/pixelband style <name>` | `original`, `gameboy`, `pico8`, `mono` or `sepia` |
@@ -61,7 +61,7 @@ Once mods ship properly, the flag won't be needed.
 | `/pixelband colors <n>` | palette size for the `original` style, 2 to 32. Fewer colours reads more like pixel art |
 | `/pixelband pixels <standard\|fine>` | `fine` puts four pixels in each character instead of two: sharper, and the right shape if pixels look wide (fonts with tight line spacing, like some macOS Terminal profiles) |
 | `/pixelband colormode <auto\|full\|256>` | full colour, or the 256 colours older terminals show; `auto` detects macOS Terminal |
-| `/pixelband animate on\|off` | pause a scene's motion (it still reacts to Claude) |
+| `/pixelband animate on\|off` | pause a scene or GIF (it still reacts to Claude) |
 | `/pixelband on` / `off` | show or hide it |
 | `/pixelband clear [--here]` | forget the image |
 | `/pixelband demo <mood>` | play `working`, `done`, `error` or `intro` on demand (good for screenshots) |
@@ -84,6 +84,8 @@ Each scene is drawn from code, not a video, and reacts to what Claude is doing:
 | `space` | stars drifting past a ringed planet | warp speed | a hyperspace flash |
 | `aurora` | northern lights over mountains and pines | brighter, faster curtains | a bright pulse |
 | `fire` | low flames over your terminal's own background | the flames climb | a burst of embers |
+| `matrix` | green code raining down | it pours | a bright scan sweeps down |
+| `aquarium` | fish, bubbles and swaying weed | the fish dart about and the bubbles pick up | a burst of bubbles |
 
 `creation` is built from Michelangelo's *The Creation of Adam* (c. 1511), which is in the public
 domain, via [Wikimedia Commons](https://commons.wikimedia.org/wiki/File:Michelangelo_-_Creation_of_Adam_(cropped).jpg).
@@ -102,8 +104,9 @@ it down to a small palette, so every block looks deliberate. The retro styles go
 the image onto a fixed palette with ordered dithering, the way a Game Boy or PICO-8 game would.
 
 Each terminal cell shows two stacked pixels (the `▀` character in one colour over a background in
-another), and see-through parts of a PNG let your terminal's background show through, so logos
-and sprites blend right in.
+another), or four with `/pixelband pixels fine` (quarter-block characters, two colours per cell).
+See-through parts of a PNG or GIF let your terminal's background show through, so logos and
+sprites blend right in.
 
 ## How it works
 
@@ -118,8 +121,8 @@ and sprites blend right in.
   (or ImageMagick on Linux) to convert and shrink the image first, so a 20 MB iPhone photo never
   gets pulled through the mod.
 - **The animation is cheap.** A timer swaps just the pixel grid 12 times a second, so nothing else
-  in Claude Code redraws. With an image, the timer only runs while an effect plays; a scene keeps it
-  running (`/pixelband animate off` stops it).
+  in Claude Code redraws. With a still image, the timer only runs while an effect plays; a scene or
+  GIF keeps it running (`/pixelband animate off` stops it).
 
 `claude plugin validate` lists everything a mod touches, and for pixelband that's:
 
@@ -128,7 +131,7 @@ hooks: session.start, turn.start, turn.complete, ui.render{component=AbovePrompt
        ui.render{component=Pane, requestId=pixelband}, command.run{command=pixelband}
 calls: $.clock.after, $.clock.every, $.command.register, $.env.get, $.fs.list, $.fs.read, $.fs.stat,
        $.process.run, $.session.root, $.store.delete, $.store.get, $.store.set, $.ui.blit, $.ui.close,
-       $.ui.invalidate, $.ui.open, $.ui.resolve
+       $.ui.invalidate, $.ui.open, $.ui.panes, $.ui.resolve
 env reads: COLORTERM, HOME, TERM_PROGRAM, TMPDIR
 ```
 
@@ -162,10 +165,11 @@ CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1 claude --plugin-dir ./pixelband
 tools/validate.sh                                          # what the engine will load and refuse
 CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1 claude plugin test .   # the test suite
 python tests/fixtures/make_fixtures.py                     # rebuild the image fixtures (needs Pillow)
+python tests/fixtures/make_gif_fixtures.py                 # rebuild the GIF fixtures
 ```
 
-The decoders are checked pixel for pixel against Pillow, and against real `sips` output for the
-photo path. For editor types, run `/plugin-types` inside Claude Code once. It writes the
+The PNG, BMP and GIF decoders are checked pixel for pixel against Pillow, and against real `sips`
+output for the photo path. For editor types, run `/plugin-types` inside Claude Code once. It writes the
 declarations to `.claude/types`, which `tsconfig.json` picks up.
 
 If pixelband makes your terminal a bit nicer, a star on the repo helps other people find it.

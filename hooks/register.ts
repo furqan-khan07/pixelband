@@ -69,7 +69,7 @@ const IMAGE_FILE = /\.(png|jpe?g|heic|heif|webp|gif|bmp|tiff?|avif)$/i
 const RECENT_DIRS = ['Downloads', 'Desktop', 'Pictures']
 
 /** Where each scene's slim strip looks, as a fraction of its height: windows over the street, the planet... */
-const SLIM_FOCUS: Record<SceneName, number> = { city: 0.66, space: 0.58, aurora: 0.5, fire: 0.7, creation: 0.5 }
+const SLIM_FOCUS: Record<SceneName, number> = { city: 0.66, space: 0.58, aurora: 0.5, fire: 0.7, creation: 0.5, matrix: 0.5, aquarium: 0.55 }
 
 export const SCENE_LABELS: Record<SceneName, string> = {
   city: 'rain on a city at night',
@@ -77,6 +77,8 @@ export const SCENE_LABELS: Record<SceneName, string> = {
   aurora: 'northern lights',
   fire: 'a wall of fire',
   creation: "Michelangelo's hands and a spark",
+  matrix: 'green code rain',
+  aquarium: 'fish, bubbles and weed',
 }
 
 /** Pixels across for a band `cols` cells wide. */
