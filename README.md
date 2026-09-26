@@ -53,6 +53,7 @@ Once mods ship properly, it'll install like any other plugin.
 | `/pixelband size <rows\|auto>` | how tall the band is, 2 to 24 rows (two pixels per row). `auto`, the default, is about a quarter of the terminal |
 | `/pixelband working <slim\|hide\|full>` | what the band does while Claude works: shrink to a 3-row strip (the default), hide, or stay full size |
 | `/pixelband colors <n>` | palette size for the `original` style, 2 to 32. Fewer colours reads more like pixel art |
+| `/pixelband colormode <auto\|full\|256>` | full colour, or the 256 colours older terminals show; `auto` detects macOS Terminal |
 | `/pixelband animate on\|off` | pause a scene's motion (it still reacts to Claude) |
 | `/pixelband on` / `off` | show or hide it |
 | `/pixelband clear [--here]` | forget the image |
@@ -113,7 +114,7 @@ hooks: session.start, turn.start, turn.complete, ui.render{component=AbovePrompt
 calls: $.clock.after, $.clock.every, $.command.register, $.env.get, $.fs.list, $.fs.read, $.fs.stat,
        $.process.run, $.session.root, $.store.delete, $.store.get, $.store.set, $.ui.blit, $.ui.close,
        $.ui.invalidate, $.ui.open, $.ui.resolve
-env reads: HOME, TMPDIR
+env reads: COLORTERM, HOME, TERM_PROGRAM, TMPDIR
 ```
 
 `$.process.run` is only ever `sips`, `magick`/`convert` (to convert a photo) and `rm` (to delete
@@ -126,8 +127,11 @@ Desktop and Pictures, to list your newest images in the menu.
   break on an update until mods ship for real.
 - **Non-PNG images need `sips` or ImageMagick.** Every Mac has `sips`; on Linux, install
   ImageMagick or use a PNG.
-- **It needs a terminal with true colour** (nearly all modern ones). Through tmux, colours can
-  come out wrong unless true colour is enabled there.
+- **Colours are best in a true-colour terminal** (iTerm2, Ghostty, kitty, WezTerm, VS Code, and
+  macOS Terminal from macOS 26). Older macOS Terminal only shows 256 colours; pixelband spots it and
+  picks from those 256 itself, keeping hues that plain rounding would turn grey, but dark night
+  skies still come out greyer than they should. `/pixelband colormode full|256|auto` overrides the
+  detection. Through tmux, enable true colour there too.
 - Only your own turns animate it. Subagents working in the background don't.
 
 ## Development

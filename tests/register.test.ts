@@ -10,7 +10,7 @@ const band = (isWorking = false, maxRows = 10) => ({
 }) as const
 
 /** Everything beneath the mod: store, env, clock, files, and a record of every frame blitted. */
-function world(on: any, files: Record<string, string> = {}, mtimes: Record<string, number> = {}) {
+function world(on: any, files: Record<string, string> = {}, mtimes: Record<string, number> = {}, env: Record<string, string> = {}) {
   const blits: any[] = []
   const panes: any[] = []
   const closed: any[] = []
@@ -35,7 +35,7 @@ function world(on: any, files: Record<string, string> = {}, mtimes: Record<strin
   // What Claude Code itself draws in the band: nothing, which we stand in for with a marker.
   on('ui.render', { component: 'AbovePrompt' }, ($: any, e: any) => { const { Text } = $.ui.resolve(e); return h(Text, {}, 'core') })
   mock.store(on)
-  mock.env(on, { HOME: '/Users/me', TMPDIR: '/tmp' })
+  mock.env(on, { HOME: '/Users/me', TMPDIR: '/tmp', ...env })
   const clock = mock.clock(on)
   return { blits, clock, panes, closed }
 }
@@ -489,6 +489,41 @@ describe('height', () => {
     await ui.redraw(tall(true).props)
     expect(await rowsOf(ui)).toBe(8)
     expect(await text($.command.run(pix('working sideways')))).toMatch(/^Usage/)
+    await ui.unmount()
+  })
+})
+
+describe('256 colours', () => {
+  const XTERM = new Set<number>()
+  for (const r of [0, 95, 135, 175, 215, 255]) for (const g of [0, 95, 135, 175, 215, 255]) for (const b of [0, 95, 135, 175, 215, 255]) XTERM.add((r << 16) | (g << 8) | b)
+  for (let k = 0; k < 24; k++) XTERM.add(((8 + 10 * k) << 16) | ((8 + 10 * k) << 8) | (8 + 10 * k))
+  const colorsOf = (cells: string) => cellsOf(cells).filter((_, i) => i % 3 !== 0).filter((c) => c !== 0x01000000)
+
+  test('in macOS Terminal the band uses only colours the terminal can show', async ($, on) => {
+    const w = world(on, { '/photo.png': IMAGES.rgb8.png! }, {}, { TERM_PROGRAM: 'Apple_Terminal' })
+    await $.session.start(SESSION)
+    await $.command.run(pix('set /photo.png'))
+    await w.clock.advance(1000)
+    const ui = await $.ui.mount(band())
+    const cols = colorsOf((await ui.find({ key: 'art' }))?.props.cells as string)
+    expect(cols.length).toBeGreaterThan(0)
+    expect(cols.every((c) => XTERM.has(c))).toBe(true)
+    expect(await text($.command.run(pix('status')))).toMatch(/256 colours/)
+    await ui.unmount()
+  })
+
+  test('full-colour terminals are left alone, and the mode can be forced', async ($, on) => {
+    const w = world(on, { '/photo.png': IMAGES.rgb8.png! })
+    await $.session.start(SESSION)
+    await $.command.run(pix('set /photo.png'))
+    await w.clock.advance(1000)
+    const ui = await $.ui.mount(band())
+    expect(colorsOf((await ui.find({ key: 'art' }))?.props.cells as string).every((c) => XTERM.has(c))).toBe(false)
+    expect(await text($.command.run(pix('colormode 256')))).toBe('colours: 256 colours.')
+    await ui.redraw()
+    expect(colorsOf((await ui.find({ key: 'art' }))?.props.cells as string).every((c) => XTERM.has(c))).toBe(true)
+    expect(await text($.command.run(pix('colormode auto')))).toBe('colours: auto (full colour in this terminal).')
+    expect(await text($.command.run(pix('colormode 16')))).toMatch(/^Usage/)
     await ui.unmount()
   })
 })

@@ -25,6 +25,7 @@ import { DURATION, FRAME_MS, frame, isOneShot, type Mood } from './effects'
 import { cleanPath, loadImage, type Io } from './load'
 import { cropRect, DEFAULT_VIEW, downscale, downscaleRegion, fit, shrinkToFit, transparency, TRANSPARENT, type Art, type View } from './pixelate'
 import type { Rgba } from './png'
+import { to256 } from './palette256'
 import { cellsFor, rowsFor } from './raster'
 import { isScene, makeScene, SCENES, type Renderer, type SceneName } from './scenes'
 import { STYLES, stylize, type Style } from './styles'
@@ -32,8 +33,9 @@ import { STYLES, stylize, type Style } from './styles'
 type Layout = 'auto' | 'banner' | 'fit'
 type Scope = 'project' | 'global'
 type WhileWorking = 'slim' | 'full' | 'hide'
+type ColorMode = 'auto' | 'full' | '256'
 /** `rows` 0 means auto: about a quarter of the terminal. */
-interface Config { rows: number; colors: number; enabled: boolean; style: Style; layout: Layout; animate: boolean; whileWorking: WhileWorking }
+interface Config { rows: number; colors: number; enabled: boolean; style: Style; layout: Layout; animate: boolean; whileWorking: WhileWorking; colorMode: ColorMode }
 /**
  * What a scope's slot in the store holds: the image (RGB when fully opaque, a quarter smaller;
  * RGBA otherwise) and/or a scene. A scene wins while set, and keeps the image for switching back.
@@ -44,7 +46,7 @@ type Source =
   | { kind: 'image'; image: Rgba; name: string; clear: number }
   | { kind: 'scene'; scene: SceneName }
 
-const DEFAULTS: Config = { rows: 0, colors: 16, enabled: true, style: 'original', layout: 'auto', animate: true, whileWorking: 'slim' }
+const DEFAULTS: Config = { rows: 0, colors: 16, enabled: true, style: 'original', layout: 'auto', animate: true, whileWorking: 'slim', colorMode: 'auto' }
 /** How tall the band gets while Claude works, in 'slim' mode: out of the way, still animating. */
 const SLIM_ROWS = 3
 /** Rows the band grows or shrinks by per frame when it changes height. */
@@ -125,6 +127,9 @@ export const register: Register = (on) => {
   let energy = 0
   /** The band's size limits from its last render, and how many rows it shows right now. */
   let limits: { cols: number; maxRows: number } | null = null
+  /** Whether this terminal looks like it only shows 256 colours (macOS Terminal before macOS 26). */
+  let only256 = false
+  const use256 = () => config.colorMode === '256' || (config.colorMode === 'auto' && only256)
   let shownRows = -1
 
   // The menu's own state.
@@ -242,7 +247,8 @@ export const register: Register = (on) => {
     if (!a) return null
     // Scenes show working and done themselves (heavier rain, lightning); intro and error apply to both.
     const m = source.kind === 'scene' && (mood === 'working' || mood === 'done') ? 'idle' : mood
-    return cellsFor(a, frame(a, m, ticks * FRAME_MS))
+    const px = frame(a, m, ticks * FRAME_MS)
+    return cellsFor(a, use256() ? to256(px) : px)
   }
 
   function blit() {
@@ -423,6 +429,13 @@ export const register: Register = (on) => {
     return show ? 'on.' : 'off.'
   }
 
+  async function setColorMode(mode: string): Promise<string> {
+    if (!['auto', 'full', '256'].includes(mode)) return 'Usage: /pixelband colormode auto|full|256'
+    config.colorMode = mode as ColorMode; await save()
+    const now = use256() ? '256 colours' : 'full colour'
+    return mode === 'auto' ? `colours: auto (${now} in this terminal).` : `colours: ${now}.`
+  }
+
   async function setAnimate(move: boolean): Promise<string> {
     config.animate = move; await save()
     return move ? 'scenes animate.' : 'scenes hold still.'
@@ -510,6 +523,9 @@ export const register: Register = (on) => {
         run: (argv) => $.process.run(argv),
       },
     }
+    const program = String((await $.env.get('TERM_PROGRAM')) ?? '')
+    const colorterm = String((await $.env.get('COLORTERM')) ?? '')
+    only256 = program === 'Apple_Terminal' && !/truecolor|24bit/i.test(colorterm)
     root = (e as any).cwd ?? ''
     try { root = (await $.session.root()) || root } catch { /* not in a repo: cwd will do */ }
     await loadState()
@@ -622,6 +638,15 @@ export const register: Register = (on) => {
         ],
         onSelect: (v: string) => act(() => setWhileWorking(v))(),
       }),
+      h(Select, {
+        key: 'colormode', label: 'Colours  ', value: config.colorMode,
+        options: [
+          { value: 'auto', label: `auto (${only256 ? '256 colours: this looks like macOS Terminal' : 'full colour'})` },
+          { value: 'full', label: 'full colour' },
+          { value: '256', label: '256 colours (older terminals)' },
+        ],
+        onSelect: (v: string) => act(() => setColorMode(v))(),
+      }),
       source?.kind === 'image'
         ? row(
           h(Text, {}, 'Crop     '),
@@ -674,6 +699,9 @@ export const register: Register = (on) => {
       }
       case 'working':
         return reply(await setWhileWorking(arg.toLowerCase()))
+      case 'colormode':
+      case 'colourmode':
+        return reply(await setColorMode(arg.toLowerCase()))
       case 'style':
         return reply(await setStyle(arg.toLowerCase()))
       case 'layout':
@@ -715,8 +743,8 @@ export const register: Register = (on) => {
       case 'help': {
         const where = scope === 'project' ? 'this project' : 'global'
         const status = !source ? 'nothing showing yet'
-          : `showing ${source.kind === 'scene' ? `the ${source.scene} scene` : source.name} (${where})${source.kind === 'image' ? `, ${layoutOf()}` : ''}, ${config.style}, ${config.rows ? `${config.rows} rows` : 'auto height'}, ${config.enabled ? 'on' : 'off'}`
-        return reply(`${status}.\n/pixelband opens the menu. Or: set <image> [--here] · scene <${SCENES.join('|')}> · style <${STYLES.join('|')}> · layout <banner|fit|auto> · move <up|down|left|right> · zoom <in|out|reset> · size <rows|auto> · working <slim|full|hide> · colors <n> · animate <on|off> · on · off · clear [--here] · demo <working|done|error|intro>`)
+          : `showing ${source.kind === 'scene' ? `the ${source.scene} scene` : source.name} (${where})${source.kind === 'image' ? `, ${layoutOf()}` : ''}, ${config.style}, ${config.rows ? `${config.rows} rows` : 'auto height'}${use256() ? ', 256 colours' : ''}, ${config.enabled ? 'on' : 'off'}`
+        return reply(`${status}.\n/pixelband opens the menu. Or: set <image> [--here] · scene <${SCENES.join('|')}> · style <${STYLES.join('|')}> · layout <banner|fit|auto> · move <up|down|left|right> · zoom <in|out|reset> · size <rows|auto> · working <slim|full|hide> · colormode <auto|full|256> · colors <n> · animate <on|off> · on · off · clear [--here] · demo <working|done|error|intro>`)
       }
       default:
         return reply(`unknown command "${sub}". /pixelband help lists them, or /pixelband alone opens the menu.`)
