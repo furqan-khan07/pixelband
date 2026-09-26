@@ -11,7 +11,7 @@ const band = (isWorking = false, maxRows = 10) => ({
 }) as const
 
 /** Everything beneath the mod: store, env, clock, files, and a record of every frame blitted. */
-function world(on: any, files: Record<string, string> = {}, mtimes: Record<string, number> = {}, env: Record<string, string> = {}) {
+function world(on: any, files: Record<string, string> = {}, mtimes: Record<string, number> = {}, env: Record<string, string> = {}, saved: Record<string, unknown> = {}) {
   const blits: any[] = []
   const panes: any[] = []
   const closed: any[] = []
@@ -35,7 +35,7 @@ function world(on: any, files: Record<string, string> = {}, mtimes: Record<strin
   on('turn.complete', ($: any, e: any) => ({ text: e.answer }))
   // What Claude Code itself draws in the band: nothing, which we stand in for with a marker.
   on('ui.render', { component: 'AbovePrompt' }, ($: any, e: any) => { const { Text } = $.ui.resolve(e); return h(Text, {}, 'core') })
-  mock.store(on)
+  mock.store(on, saved)
   mock.env(on, { HOME: '/Users/me', TMPDIR: '/tmp', ...env })
   const clock = mock.clock(on)
   return { blits, clock, panes, closed }
@@ -555,7 +555,7 @@ describe('fine pixels', () => {
     await $.session.start(SESSION)
     await $.command.run(pix('set /photo.png'))
     await w.clock.advance(1000)
-    expect(await text($.command.run(pix('pixels fine')))).toMatch(/^fine pixels/)
+    expect(await text($.command.run(pix('pixels fine')))).toMatch(/^fine pixels in this terminal/)
     const ui = await $.ui.mount(band())
     const art = await ui.find({ key: 'art' })
     expect([art?.props.columns, art?.props.rows]).toEqual([80, 4])
@@ -599,5 +599,31 @@ describe('animated GIFs', () => {
     const menu = await $.ui.mount(PANE)
     expect(await menu.find({ key: 'up' })).toBeDefined()
     expect(await menu.find({ key: 'animate' })).toBeDefined()
+  })
+})
+
+describe('per-terminal pixels', () => {
+  const glyphsOf = async (ui: any) => new Set(cellsOf((await ui.find({ key: 'art' }))?.props.cells as string).filter((_, i) => i % 3 === 0))
+  const saved = { config: { pixelsFor: { Apple_Terminal: 'fine' } } }
+
+  test('fine pixels saved for macOS Terminal are used there', async ($, on) => {
+    const w = world(on, { '/photo.png': IMAGES.rgb8.png! }, {}, { TERM_PROGRAM: 'Apple_Terminal' }, saved)
+    await $.session.start(SESSION)
+    await $.command.run(pix('set /photo.png'))
+    await w.clock.advance(1000)
+    const ui = await $.ui.mount(band())
+    expect([...(await glyphsOf(ui))].some((g) => ![0x2580, 0x2584, 0x20].includes(g))).toBe(true)
+    await ui.unmount()
+  })
+
+  test('...and another terminal app keeps standard pixels', async ($, on) => {
+    const w = world(on, { '/photo.png': IMAGES.rgb8.png! }, {}, { TERM_PROGRAM: 'vscode' }, saved)
+    await $.session.start(SESSION)
+    await $.command.run(pix('set /photo.png'))
+    await w.clock.advance(1000)
+    const ui = await $.ui.mount(band())
+    expect([...(await glyphsOf(ui))].every((g) => [0x2580, 0x2584, 0x20].includes(g))).toBe(true)
+    expect(await text($.command.run(pix('pixels fine')))).toBe('fine pixels in vscode: four per character, for fonts with tight line spacing.')
+    await ui.unmount()
   })
 })

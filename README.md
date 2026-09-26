@@ -59,7 +59,7 @@ Once mods ship properly, the flag won't be needed.
 | `/pixelband size <rows\|auto>` | how tall the band is, 2 to 24 rows (two pixels per row). `auto`, the default, is about a quarter of the terminal |
 | `/pixelband working <slim\|hide\|full>` | what the band does while Claude works: shrink to a 3-row strip (the default), hide, or stay full size |
 | `/pixelband colors <n>` | palette size for the `original` style, 2 to 32. Fewer colours reads more like pixel art |
-| `/pixelband pixels <standard\|fine>` | `fine` puts four pixels in each character instead of two: sharper, and the right shape if pixels look wide (fonts with tight line spacing, like some macOS Terminal profiles) |
+| `/pixelband pixels <standard\|fine>` | `fine` puts four pixels in each character instead of two: sharper, and the right shape if pixels look wide (fonts with tight line spacing, like some macOS Terminal profiles). Saved per terminal app, since it depends on the font |
 | `/pixelband colormode <auto\|full\|256>` | full colour, or the 256 colours older terminals show; `auto` detects macOS Terminal |
 | `/pixelband animate on\|off` | pause a scene or GIF (it still reacts to Claude) |
 | `/pixelband on` / `off` | show or hide it |

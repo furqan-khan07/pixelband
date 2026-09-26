@@ -38,7 +38,9 @@ type ColorMode = 'auto' | 'full' | '256'
 /** standard: two pixels per cell (half blocks). fine: four (quadrants), for nearly square cells. */
 type Pixels = 'standard' | 'fine'
 /** `rows` 0 means auto: about a quarter of the terminal. */
-interface Config { rows: number; colors: number; enabled: boolean; style: Style; layout: Layout; animate: boolean; whileWorking: WhileWorking; colorMode: ColorMode; pixels: Pixels }
+interface Config { rows: number; colors: number; enabled: boolean; style: Style; layout: Layout; animate: boolean; whileWorking: WhileWorking; colorMode: ColorMode
+  /** Pixels per character, per terminal app: the right choice depends on that terminal's font. */
+  pixelsFor: Record<string, Pixels> }
 /**
  * What a scope's slot in the store holds: the image (RGB when fully opaque, a quarter smaller;
  * RGBA otherwise) and/or a scene. A scene wins while set, and keeps the image for switching back.
@@ -49,7 +51,7 @@ type Source =
   | { kind: 'image'; image: Rgba; name: string; clear: number; anim?: Anim }
   | { kind: 'scene'; scene: SceneName }
 
-const DEFAULTS: Config = { rows: 0, colors: 16, enabled: true, style: 'original', layout: 'auto', animate: true, whileWorking: 'slim', colorMode: 'auto', pixels: 'standard' }
+const DEFAULTS: Config = { rows: 0, colors: 16, enabled: true, style: 'original', layout: 'auto', animate: true, whileWorking: 'slim', colorMode: 'auto', pixelsFor: {} }
 /** How tall the band gets while Claude works, in 'slim' mode: out of the way, still animating. */
 const SLIM_ROWS = 3
 /** Rows the band grows or shrinks by per frame when it changes height. */
@@ -143,6 +145,9 @@ export const register: Register = (on) => {
   let limits: { cols: number; maxRows: number } | null = null
   /** Whether this terminal looks like it only shows 256 colours (macOS Terminal before macOS 26). */
   let only256 = false
+  /** Which terminal app this session runs in (TERM_PROGRAM), for settings that depend on it. */
+  let terminal = 'unknown'
+  const pixelsNow = (): Pixels => config.pixelsFor?.[terminal] ?? 'standard'
   const use256 = () => config.colorMode === '256' || (config.colorMode === 'auto' && only256)
   let shownRows = -1
 
@@ -208,13 +213,13 @@ export const register: Register = (on) => {
   function imageArt(rows: number, cols: number): Art | null {
     if (source?.kind !== 'image') return null
     const layout = layoutOf()
-    const key = `${layout}|${cols}x${rows}|${config.pixels}|${config.style}|${config.colors}|${view.focusX},${view.focusY},${view.zoom}|${source.name}`
+    const key = `${layout}|${cols}x${rows}|${pixelsNow()}|${config.style}|${config.colors}|${view.focusX},${view.focusY},${view.zoom}|${source.name}`
     if (artKey !== key) { artKey = key; frameArts = new Map(); animSample = null }
     const anim = source.anim
     const index = anim ? frameAt(anim, animT) : 0
     const hit = frameArts.get(index)
     if (hit) return hit
-    const w = pixelCols(cols, config.pixels), h = rows * 2
+    const w = pixelCols(cols, pixelsNow()), h = rows * 2
     const shrink = (img: Rgba): Rgba => {
       if (layout === 'banner') return downscaleRegion(img, cropRect(img.width, img.height, w / h, view), w, h)
       const f = fit(img.width, img.height, rows, w)
@@ -240,7 +245,7 @@ export const register: Register = (on) => {
    */
   function sceneArt(rows: number, cols: number): Art | null {
     if (source?.kind !== 'scene') return null
-    const w = pixelCols(cols, config.pixels), h = rows * 2
+    const w = pixelCols(cols, pixelsNow()), h = rows * 2
     const fullH = Math.max(h, fullRows() * 2)
     const flash = mood === 'done' ? ticks * FRAME_MS : null
     const key = `${source.scene}|${w}x${h}/${fullH}|${sceneT}|${flash}|${config.style}|${config.colors}`
@@ -273,7 +278,7 @@ export const register: Register = (on) => {
     const m = source.kind === 'scene' && (mood === 'working' || mood === 'done') ? 'idle' : mood
     const px = frame(a, m, ticks * FRAME_MS)
     const shown = use256() ? to256(px) : px
-    return config.pixels === 'fine' ? quadCellsFor(a, shown) : cellsFor(a, shown)
+    return pixelsNow() === 'fine' ? quadCellsFor(a, shown) : cellsFor(a, shown)
   }
 
   function blit() {
@@ -472,8 +477,9 @@ export const register: Register = (on) => {
 
   async function setPixels(mode: string): Promise<string> {
     if (!['standard', 'fine'].includes(mode)) return 'Usage: /pixelband pixels standard|fine'
-    config.pixels = mode as Pixels; await save()
-    return mode === 'fine' ? 'fine pixels: four per character, for fonts with tight line spacing.' : 'standard pixels: two per character.'
+    config.pixelsFor = { ...(config.pixelsFor ?? {}), [terminal]: mode as Pixels }; await save()
+    const where = terminal === 'unknown' ? 'this terminal' : terminal.replace(/\.app$/, '').replace('Apple_Terminal', 'macOS Terminal')
+    return mode === 'fine' ? `fine pixels in ${where}: four per character, for fonts with tight line spacing.` : `standard pixels in ${where}: two per character.`
   }
 
   async function setAnimate(move: boolean): Promise<string> {
@@ -566,6 +572,7 @@ export const register: Register = (on) => {
     const program = String((await $.env.get('TERM_PROGRAM')) ?? '')
     const colorterm = String((await $.env.get('COLORTERM')) ?? '')
     only256 = program === 'Apple_Terminal' && !/truecolor|24bit/i.test(colorterm)
+    terminal = program || 'unknown'
     root = (e as any).cwd ?? ''
     try { root = (await $.session.root()) || root } catch { /* not in a repo: cwd will do */ }
     await loadState()
@@ -684,10 +691,10 @@ export const register: Register = (on) => {
         onSelect: (v: string) => act(() => setWhileWorking(v))(),
       }),
       select({
-        key: 'pixels', label: 'Pixels   ', value: config.pixels,
+        key: 'pixels', label: 'Pixels   ', value: pixelsNow(),
         options: [
           { value: 'standard', label: 'standard: 2 per character (most terminals)' },
-          { value: 'fine', label: 'fine: 4 per character (if pixels look wide)' },
+          { value: 'fine', label: 'fine: 4 per character, if pixels look wide (this terminal)' },
         ],
         onSelect: (v: string) => act(() => setPixels(v))(),
       }),
