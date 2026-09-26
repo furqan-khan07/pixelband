@@ -21,6 +21,7 @@
  * menu is a pane (`ui.render` for `Pane`) whose controls call the same actions as the commands.
  */
 import type { Register } from 'claude-code'
+import { decodeAnim, encodeAnim, frameAt, spread, stack, type Anim, type StoredAnim } from './anim'
 import { DURATION, FRAME_MS, frame, isOneShot, type Mood } from './effects'
 import { cleanPath, loadImage, type Io } from './load'
 import { cropRect, DEFAULT_VIEW, downscale, downscaleRegion, fit, shrinkToFit, transparency, TRANSPARENT, type Art, type View } from './pixelate'
@@ -42,10 +43,10 @@ interface Config { rows: number; colors: number; enabled: boolean; style: Style;
  * What a scope's slot in the store holds: the image (RGB when fully opaque, a quarter smaller;
  * RGBA otherwise) and/or a scene. A scene wins while set, and keeps the image for switching back.
  */
-interface Stored { w?: number; h?: number; rgb?: string; rgba?: string; name?: string; scene?: string }
+interface Stored { w?: number; h?: number; rgb?: string; rgba?: string; anim?: StoredAnim; name?: string; scene?: string }
 
 type Source =
-  | { kind: 'image'; image: Rgba; name: string; clear: number }
+  | { kind: 'image'; image: Rgba; name: string; clear: number; anim?: Anim }
   | { kind: 'scene'; scene: SceneName }
 
 const DEFAULTS: Config = { rows: 0, colors: 16, enabled: true, style: 'original', layout: 'auto', animate: true, whileWorking: 'slim', colorMode: 'auto', pixels: 'standard' }
@@ -118,8 +119,12 @@ export const register: Register = (on) => {
   /** Whether the saved state has been looked up yet, so the "no image" hint doesn't flash at startup. */
   let ready = false
 
-  let art: Art | null = null
+  /** The image's art per frame (one entry for a still), for the band size and look in `artKey`. */
+  let frameArts = new Map<number, Art>()
   let artKey = ''
+  /** A few of an animation's frames stacked, for the palette every frame shares. */
+  let animSample: Rgba | null = null
+  let animT = 0
   let renderer: Renderer | null = null
   let rendererKey = ''
   let sceneCache: { key: string; art: Art } | null = null
@@ -158,6 +163,7 @@ export const register: Register = (on) => {
 
   function decodeImage(s: Stored | undefined): Rgba | null {
     if (!s || typeof s.w !== 'number' || typeof s.h !== 'number') return null
+    if (s.anim) return decodeAnim(s.w, s.h, s.anim).frames[0]
     if (typeof s.rgba === 'string') return { width: s.w, height: s.h, data: Uint8Array.fromBase64(s.rgba) }
     if (typeof s.rgb !== 'string') return null
     const rgb = Uint8Array.fromBase64(s.rgb)
@@ -174,14 +180,15 @@ export const register: Register = (on) => {
     const global = (await host.get('image:global')) as Stored | undefined
     const pick = project ?? global
     scope = project ? 'project' : global ? 'global' : null
-    const image = decodeImage(pick)
+    const anim = pick?.anim && pick.w && pick.h ? decodeAnim(pick.w, pick.h, pick.anim) : undefined
+    const image = anim ? anim.frames[0] : decodeImage(pick)
     imageName = image ? pick?.name ?? 'image' : ''
     if (pick?.scene && isScene(pick.scene)) source = { kind: 'scene', scene: pick.scene }
-    else if (image) source = { kind: 'image', image, name: imageName, clear: transparency(image) }
+    else if (image) source = { kind: 'image', image, name: imageName, clear: transparency(image), anim }
     else source = null
     const v = scope ? ((await host.get(viewKeyFor(scope))) as Partial<View> | undefined) : undefined
     view = { ...DEFAULT_VIEW, ...(v ?? {}) }
-    art = null
+    artKey = ''
     sceneCache = null
   }
 
@@ -198,23 +205,31 @@ export const register: Register = (on) => {
    */
   function imageArt(rows: number, cols: number): Art | null {
     if (source?.kind !== 'image') return null
-    const image = source.image
     const layout = layoutOf()
     const key = `${layout}|${cols}x${rows}|${config.pixels}|${config.style}|${config.colors}|${view.focusX},${view.focusY},${view.zoom}|${source.name}`
-    if (art && artKey === key) return art
+    if (artKey !== key) { artKey = key; frameArts = new Map(); animSample = null }
+    const anim = source.anim
+    const index = anim ? frameAt(anim, animT) : 0
+    const hit = frameArts.get(index)
+    if (hit) return hit
     const w = pixelCols(cols, config.pixels), h = rows * 2
-    if (layout === 'banner') {
-      art = stylize(downscaleRegion(image, cropRect(image.width, image.height, w / h, view), w, h), config.style, config.colors)
-    } else {
-      const f = fit(image.width, image.height, rows, w)
-      const inner = stylize(downscale(image, f.w, f.h), config.style, config.colors)
-      const px = new Uint32Array(w * f.h).fill(TRANSPARENT)
-      const left = Math.floor((w - f.w) / 2)
-      for (let y = 0; y < f.h; y++) px.set(inner.px.subarray(y * f.w, (y + 1) * f.w), y * w + left)
-      art = { w, h: f.h, px }
+    const shrink = (img: Rgba): Rgba => {
+      if (layout === 'banner') return downscaleRegion(img, cropRect(img.width, img.height, w / h, view), w, h)
+      const f = fit(img.width, img.height, rows, w)
+      return downscale(img, f.w, f.h)
     }
-    artKey = key
-    return art
+    if (anim && !animSample) animSample = stack(spread(anim.frames, 6).map(shrink))
+    const small = shrink(anim ? anim.frames[index] : source.image)
+    const inner = stylize(small, config.style, config.colors, animSample ?? small)
+    let made: Art = inner
+    if (layout === 'fit') {
+      const px = new Uint32Array(w * inner.h).fill(TRANSPARENT)
+      const left = Math.floor((w - inner.w) / 2)
+      for (let y = 0; y < inner.h; y++) px.set(inner.px.subarray(y * inner.w, (y + 1) * inner.w), y * w + left)
+      made = { w, h: inner.h, px }
+    }
+    frameArts.set(index, made)
+    return made
   }
 
   /**
@@ -280,8 +295,11 @@ export const register: Register = (on) => {
 
   const resizing = () => limits !== null && config.enabled && shownRows !== targetRows()
 
+  /** A scene or an animated image: something that moves by itself. */
+  const moving = () => source?.kind === 'scene' || (source?.kind === 'image' && !!source.anim)
+
   const animating = () =>
-    mood !== 'idle' || resizing() || (source?.kind === 'scene' && config.enabled && config.animate && band !== null)
+    mood !== 'idle' || resizing() || (moving() && config.enabled && config.animate && band !== null)
 
   function stopTimer() { timer?.cancel(); timer = null }
 
@@ -301,6 +319,7 @@ export const register: Register = (on) => {
       sceneT += FRAME_MS
       energy += ((working ? 1 : 0) - energy) * 0.1
     }
+    if (source?.kind === 'image' && source.anim && config.animate) animT += FRAME_MS
     if (isOneShot(mood) && ticks * FRAME_MS >= DURATION[mood]) setMood(working ? 'working' : 'idle')
     else blit()
   }
@@ -317,11 +336,11 @@ export const register: Register = (on) => {
 
   async function save() {
     await host?.set('config', config)
-    art = null; sceneCache = null
+    artKey = ''; sceneCache = null
     if (limits) shownRows = targetRows() // a size picked by hand applies at once; only turns glide
     redraw(); syncTimer()
   }
-  async function saveView() { if (scope) await host?.set(viewKeyFor(scope), view); art = null; redraw() }
+  async function saveView() { if (scope) await host?.set(viewKeyFor(scope), view); artKey = ''; redraw() }
 
   async function writeSlot(s: Scope, value: Stored): Promise<string | null> {
     const put = (await host?.set(slotKey(s), value)) as { deny?: string } | undefined
@@ -334,9 +353,12 @@ export const register: Register = (on) => {
     const path = cleanPath(input, (await host.home()) as string | undefined)
     let loaded
     try { loaded = await loadImage(host.io, path) } catch (err: any) { return `${err?.message ?? err}` }
-    const kept = shrinkToFit(loaded.image, STORED_MAX_SIDE)
     const name = path.split('/').pop() || path
-    const deny = await writeSlot(s, encodeImage(kept, name))
+    const frames = loaded.frames
+    const stored: Stored = frames && loaded.delays
+      ? { w: frames[0].width, h: frames[0].height, anim: encodeAnim(frames, loaded.delays), name }
+      : encodeImage(shrinkToFit(loaded.image, STORED_MAX_SIDE), name)
+    const deny = await writeSlot(s, stored)
     if (deny) return `couldn't save it (${deny}). Try /pixelband clear on banners you no longer use.`
     view = { ...DEFAULT_VIEW }
     await host.set(viewKeyFor(s), view)
@@ -344,7 +366,9 @@ export const register: Register = (on) => {
     if (!config.enabled) { config.enabled = true; await host.set('config', config) }
     redraw()
     setMood('intro')
-    return `${name} is now ${s === 'project' ? "this project's" : 'your'} banner (${loaded.image.width}x${loaded.image.height}, read via ${loaded.via}).`
+    animT = 0
+    const what = frames ? `${frames.length} frames, ${loaded.image.width}x${loaded.image.height}` : `${loaded.image.width}x${loaded.image.height}`
+    return `${name} is now ${s === 'project' ? "this project's" : 'your'} banner (${what}, read via ${loaded.via}).`
   }
 
   async function setScene(name: string, s: Scope): Promise<string> {
@@ -452,7 +476,7 @@ export const register: Register = (on) => {
 
   async function setAnimate(move: boolean): Promise<string> {
     config.animate = move; await save()
-    return move ? 'scenes animate.' : 'scenes hold still.'
+    return move ? 'scenes and GIFs animate.' : 'scenes and GIFs hold still.'
   }
 
   // ---------------------------------------------------------------------------------------------
@@ -685,7 +709,10 @@ export const register: Register = (on) => {
           h(Button, { key: 'zoom-out', hotkey: 'x', plain: true, label: 'out', onPress: act(() => zoom('out')) }),
           h(Button, { key: 'reset', hotkey: 'r', plain: true, label: 'reset', onPress: act(() => zoom('reset')) }),
         )
-        : row(h(Text, {}, 'Motion   '), h(Button, { key: 'animate', label: config.animate ? 'pause' : 'animate', onPress: act(() => setAnimate(!config.animate)) }), h(Text, { dimColor: true }, config.animate ? 'moving' : 'paused')),
+        : null,
+      moving()
+        ? row(h(Text, {}, 'Motion   '), h(Button, { key: 'animate', label: config.animate ? 'pause' : 'animate', onPress: act(() => setAnimate(!config.animate)) }), h(Text, { dimColor: true }, config.animate ? 'moving' : 'paused'))
+        : null,
       source
         ? select({
           key: 'scope', label: 'Where    ', value: s,
@@ -773,7 +800,7 @@ export const register: Register = (on) => {
       case 'help': {
         const where = scope === 'project' ? 'this project' : 'global'
         const status = !source ? 'nothing showing yet'
-          : `showing ${source.kind === 'scene' ? `the ${source.scene} scene` : source.name} (${where})${source.kind === 'image' ? `, ${layoutOf()}` : ''}, ${config.style}, ${config.rows ? `${config.rows} rows` : 'auto height'}${use256() ? ', 256 colours' : ''}, ${config.enabled ? 'on' : 'off'}`
+          : `showing ${source.kind === 'scene' ? `the ${source.scene} scene` : source.name} (${where})${source.kind === 'image' ? `, ${layoutOf()}${source.anim ? `, ${source.anim.frames.length} frames` : ''}` : ''}, ${config.style}, ${config.rows ? `${config.rows} rows` : 'auto height'}${use256() ? ', 256 colours' : ''}, ${config.enabled ? 'on' : 'off'}`
         return reply(`${status}.\n/pixelband opens the menu. Or: set <image> [--here] · scene <${SCENES.join('|')}> · style <${STYLES.join('|')}> · layout <banner|fit|auto> · move <up|down|left|right> · zoom <in|out|reset> · size <rows|auto> · working <slim|full|hide> · colormode <auto|full|256> · pixels <standard|fine> · colors <n> · animate <on|off> · on · off · clear [--here] · demo <working|done|error|intro>`)
       }
       default:

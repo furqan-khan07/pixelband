@@ -54,28 +54,34 @@ function levels(src: Rgba): (c: Rgb) => Rgb {
   }
 }
 
-/** Turn a resized image into pixel art in `style`. `colors` is the palette size for original/sepia. */
-export function stylize(small: Rgba, style: Style, colors: number): Art {
+/**
+ * Turn a resized image into pixel art in `style`. `colors` is the palette size for original/sepia.
+ * `from` is what the brightness levels and palette are taken from: the image itself by default, or
+ * a sample of an animation's frames, so every frame shares one palette and colours don't flicker.
+ */
+export function stylize(small: Rgba, style: Style, colors: number, from: Rgba = small): Art {
   const { width: w, height: h, data } = small
   const px = new Uint32Array(w * h)
-  const lift = levels(small)
+  const lift = levels(from)
   const opaque = (i: number) => data[i * 4 + 3] >= 128
   const rgbAt = (i: number): Rgb => lift([data[i * 4], data[i * 4 + 1], data[i * 4 + 2]])
+  const tone = (c: Rgb): Rgb => {
+    if (style !== 'sepia') return punch(c[0], c[1], c[2])
+    const l = 0.299 * c[0] + 0.587 * c[1] + 0.114 * c[2]
+    return [clamp(l * 1.07 + 20), clamp(l * 0.9 + 8), clamp(l * 0.66)]
+  }
 
   if (style === 'original' || style === 'sepia') {
     const toned: (Rgb | null)[] = []
-    for (let i = 0; i < w * h; i++) {
-      if (!opaque(i)) { toned.push(null); continue }
-      let c = rgbAt(i)
-      if (style === 'sepia') {
-        const l = 0.299 * c[0] + 0.587 * c[1] + 0.114 * c[2]
-        c = [clamp(l * 1.07 + 20), clamp(l * 0.9 + 8), clamp(l * 0.66)]
-      } else {
-        c = punch(c[0], c[1], c[2])
+    for (let i = 0; i < w * h; i++) toned.push(opaque(i) ? tone(rgbAt(i)) : null)
+    let sample = toned.filter((c): c is Rgb => !!c)
+    if (from !== small) {
+      sample = []
+      for (let i = 0; i < from.width * from.height; i++) {
+        if (from.data[i * 4 + 3] >= 128) sample.push(tone(lift([from.data[i * 4], from.data[i * 4 + 1], from.data[i * 4 + 2]])))
       }
-      toned.push(c)
     }
-    const palette = medianCut(toned.filter((c): c is Rgb => !!c), style === 'sepia' ? Math.min(colors, 8) : Math.max(2, colors))
+    const palette = medianCut(sample, style === 'sepia' ? Math.min(colors, 8) : Math.max(2, colors))
     for (let i = 0; i < w * h; i++) {
       const c = toned[i]
       px[i] = c ? pack(nearest(c, palette)) : TRANSPARENT

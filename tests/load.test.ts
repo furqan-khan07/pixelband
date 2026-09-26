@@ -1,5 +1,6 @@
 import { describe, expect, test, tier } from 'claude-code/testing'
-import { cleanPath, loadImage, type Io } from '../hooks/load'
+import { cleanPath, loadGif, loadImage, MAX_FRAMES, type Io } from '../hooks/load'
+import { GIFS } from './fixtures/gifs'
 import { IMAGES } from './fixtures/images'
 
 tier('user')
@@ -67,5 +68,33 @@ describe('load', () => {
   test('an interlaced PNG falls back to the OS tool', async () => {
     const { io } = fakeIo({ '/i.png': IMAGES.interlaced.png! }, (argv) => (argv[0] === 'sips' ? 0 : 127))
     expect((await loadImage(io, '/i.png')).via).toBe('sips')
+  })
+
+  test('an animated GIF is decoded here, every frame with its timing, and nothing is run', async () => {
+    const { io, runs } = fakeIo({ '/Users/me/loop.gif': GIFS.bounce.gif })
+    const r = await loadImage(io, '/Users/me/loop.gif')
+    expect([r.via, r.frames?.length, r.delays]).toEqual(['gif', 6, [80, 80, 120, 120, 100, 50]])
+    expect(runs).toEqual([])
+  })
+
+  test('a one-frame GIF is just a still', async () => {
+    const { io } = fakeIo({ '/s.gif': GIFS.still.gif })
+    const r = await loadImage(io, '/s.gif')
+    expect([r.via, r.frames, r.image.width]).toEqual(['gif', undefined, 24])
+  })
+
+  test('a long GIF keeps every nth frame, and the loop takes as long as before', async () => {
+    // Build a GIF with more frames than we keep by repeating the bounce's frame blocks.
+    const src = Uint8Array.fromBase64(GIFS.bounce.gif)
+    const header = src.subarray(0, 13 + 3 * (1 << ((src[10] & 7) + 1)))
+    const body = src.subarray(header.length, src.length - 1)
+    const copies = Math.ceil((MAX_FRAMES * 2 + 5) / 6)
+    const big = new Uint8Array(header.length + body.length * copies + 1)
+    big.set(header)
+    for (let i = 0; i < copies; i++) big.set(body, header.length + i * body.length)
+    big[big.length - 1] = 0x3b
+    const r = loadGif(big)
+    expect(r.frames!.length).toBeLessThanOrEqual(MAX_FRAMES)
+    expect(r.delays!.reduce((a, b) => a + b, 0)).toBe(550 * copies)
   })
 })

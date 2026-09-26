@@ -1,4 +1,5 @@
 import { describe, expect, mock, test, tier } from 'claude-code/testing'
+import { GIFS } from './fixtures/gifs'
 import { IMAGES } from './fixtures/images'
 
 tier('user')
@@ -289,7 +290,7 @@ describe('scenes', () => {
     await $.session.start(SESSION)
     await $.command.run(pix('scene aurora'))
     const ui = await $.ui.mount(band())
-    expect(await text($.command.run(pix('animate off')))).toBe('scenes hold still.')
+    expect(await text($.command.run(pix('animate off')))).toBe('scenes and GIFs hold still.')
     await w.clock.advance(1500)
     const n = w.blits.length
     await w.clock.advance(1500)
@@ -561,5 +562,41 @@ describe('fine pixels', () => {
     expect([...glyphs].some((g) => ![0x2580, 0x2584, 0x20].includes(g))).toBe(true)   // side halves and quadrants, which standard never uses
     expect(await text($.command.run(pix('pixels huge')))).toMatch(/^Usage/)
     await ui.unmount()
+  })
+})
+
+describe('animated GIFs', () => {
+  test('a GIF plays in the band, keeps playing while idle, and is remembered', async ($, on) => {
+    const w = world(on, { '/Users/me/loop.gif': GIFS.bounce.gif })
+    await $.session.start(SESSION)
+    expect(await text($.command.run(pix('set ~/loop.gif')))).toBe('loop.gif is now your banner (6 frames, 24x16, read via gif).')
+    const ui = await $.ui.mount(band())
+    await w.clock.advance(1000)
+    const seen = new Set<string>()
+    const from = w.blits.length
+    await w.clock.advance(700)
+    for (const b of w.blits.slice(from)) seen.add(b.cells)
+    expect(seen.size).toBeGreaterThanOrEqual(3)          // the ball moves
+    expect(await text($.command.run(pix('status')))).toMatch(/^showing loop\.gif \(global\), banner, 6 frames/)
+    await $.session.start(SESSION)
+    expect(await text($.command.run(pix('status')))).toMatch(/6 frames/)
+    await ui.unmount()
+  })
+
+  test('pausing holds the frame; the menu offers both crop and motion', async ($, on) => {
+    const w = world(on, { '/loop.gif': GIFS.bounce.gif })
+    await $.session.start(SESSION)
+    await $.command.run(pix('set /loop.gif'))
+    const ui = await $.ui.mount(band())
+    await $.command.run(pix('animate off'))
+    await w.clock.advance(1500)
+    const n = w.blits.length
+    await w.clock.advance(1000)
+    expect(w.blits.length).toBe(n)
+    await ui.unmount()
+    await $.command.run(pix(''))
+    const menu = await $.ui.mount(PANE)
+    expect(await menu.find({ key: 'up' })).toBeDefined()
+    expect(await menu.find({ key: 'animate' })).toBeDefined()
   })
 })

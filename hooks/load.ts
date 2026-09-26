@@ -1,11 +1,13 @@
 /**
  * Getting an image off disk and into RGBA.
  *
- * PNG and BMP decode right here in the mod. Everything else people actually have (JPEG, HEIC from
- * an iPhone, WebP, GIF) goes through the OS: `sips` ships with every Mac, ImageMagick is common on
+ * PNG, BMP and GIF (animated too) decode right here in the mod. Everything else people actually have
+ * (JPEG, HEIC from an iPhone, WebP) goes through the OS: `sips` ships with every Mac, ImageMagick is common on
  * Linux. They also shrink the photo on the way, so we never pull a 12-megapixel image into the mod.
  */
 import { decodeBmp, isBmp } from './bmp'
+import { countGifFrames, decodeGif, isGif } from './gif'
+import { downscale } from './pixelate'
 import { decodePng, isPng, type Rgba } from './png'
 
 /** How big an image we decode ourselves before handing it to the OS tool to shrink first. */
@@ -13,7 +15,33 @@ const MAX_DIRECT_PIXELS = 1024 * 1024
 /** Longest side we ask the OS tool for. The band is tiny; this is plenty. */
 const TOOL_MAX_SIDE = 256
 
-export interface Loaded { image: Rgba; via: string }
+/** An image, plus its frames and their delays (ms) when it's animated. */
+export interface Loaded { image: Rgba; via: string; frames?: Rgba[]; delays?: number[] }
+
+/** Most frames we keep: longer GIFs keep every 2nd, 3rd... frame, with the timing added up. */
+export const MAX_FRAMES = 120
+/** Pixels across all kept frames, so an animation fits the store with room to spare. */
+const ANIM_BUDGET = 1_200_000
+const ANIM_MAX_SIDE = 240
+const STILL_MAX_SIDE = 320
+const MAX_GIF_BYTES = 30 * 1024 * 1024
+
+/** Decode a GIF, shrinking each frame as it comes so a big one never sits in memory whole. */
+export function loadGif(bytes: Uint8Array): Loaded {
+  if (bytes.length > MAX_GIF_BYTES) throw new Error(`that GIF is ${Math.round(bytes.length / 1048576)} MB; up to 30 MB works`)
+  const count = countGifFrames(bytes)
+  const step = Math.max(1, Math.ceil(count / MAX_FRAMES))
+  const kept = Math.ceil(count / step)
+  const w = bytes[6] | (bytes[7] << 8), h = bytes[8] | (bytes[9] << 8)
+  const scale = Math.min(1, (count > 1 ? ANIM_MAX_SIDE : STILL_MAX_SIDE) / Math.max(w, h), count > 1 ? Math.sqrt(ANIM_BUDGET / (kept * w * h)) : 1)
+  const tw = Math.max(1, Math.round(w * scale)), th = Math.max(1, Math.round(h * scale))
+  const frames: Rgba[] = [], delays: number[] = []
+  decodeGif(bytes, (canvas, delay, i) => {
+    if (i % step === 0) { frames.push(scale === 1 ? { width: w, height: h, data: canvas.data.slice() } : downscale(canvas, tw, th)); delays.push(delay) }
+    else delays[delays.length - 1] += delay
+  })
+  return frames.length > 1 ? { image: frames[0], via: 'gif', frames, delays } : { image: frames[0], via: 'gif' }
+}
 
 /**
  * What loading needs from Claude Code. Passed as plain functions because a mod may not hand `$`
@@ -72,7 +100,7 @@ async function viaTool(io: Io, path: string): Promise<Loaded> {
 }
 
 /** Photo formats go straight to the OS tool: no point pulling a 20 MB HEIC through the mod. */
-const TOOL_FIRST = /\.(jpe?g|heic|heif|webp|gif|tiff?|avif|icns|psd)$/i
+const TOOL_FIRST = /\.(jpe?g|heic|heif|webp|tiff?|avif|icns|psd)$/i
 
 /** Load any image we can into RGBA. */
 export async function loadImage(io: Io, path: string): Promise<Loaded> {
@@ -93,6 +121,12 @@ export async function loadImage(io: Io, path: string): Promise<Loaded> {
       try { return { image: decodePng(bytes), via: 'png' } } catch { /* e.g. interlaced: try the tool */ }
     }
     try { return await viaTool(io, path) } catch { return { image: decodePng(bytes), via: 'png' } }
+  }
+  if (isGif(bytes)) {
+    try { return loadGif(bytes) } catch (err: any) {
+      if (/MB; up to/.test(err?.message ?? '')) throw err
+      // an odd GIF: let the OS tool have a go at its first frame
+    }
   }
   if (isBmp(bytes)) {
     try { return { image: decodeBmp(bytes), via: 'bmp' } } catch { /* odd BMP: try the tool */ }

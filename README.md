@@ -50,7 +50,7 @@ Once mods ship properly, the flag won't be needed.
 |---|---|
 | `/pixelband` | open the menu |
 | `/pixelband scene <name>` | an animated scene: `creation`, `city` (rain on a city at night), `space`, `aurora` or `fire` |
-| `/pixelband set <image>` | use an image: PNG, JPEG, HEIC (iPhone photos), WebP, GIF and more |
+| `/pixelband set <image>` | use an image: PNG, JPEG, HEIC (iPhone photos), WebP and more. **Animated GIFs play**, looping, with their own timing |
 | `/pixelband set <image> --here` | use it for **this project only**, so each repo gets its own banner |
 | `/pixelband style <name>` | `original`, `gameboy`, `pico8`, `mono` or `sepia` |
 | `/pixelband move <up\|down\|left\|right> [steps]` | aim the crop at the part of the picture you want |
@@ -111,6 +111,9 @@ and sprites blend right in.
 - **No dependencies.** Mods run in a sandbox with no image decoders, no compression APIs and no
   WebAssembly, so pixelband decodes PNG itself (including the zlib decompression) in plain
   TypeScript.
+- **GIFs are decoded in the mod too**, frames and timing and all, since macOS's `sips` only
+  returns a GIF's first frame. Frames are shrunk as they're read, long GIFs keep every second or
+  third frame, and the loop is stored as one shared palette so it fits in Claude Code's store.
 - **Photos go through your OS.** For JPEG, HEIC, WebP and friends it asks macOS's built-in `sips`
   (or ImageMagick on Linux) to convert and shrink the image first, so a 20 MB iPhone photo never
   gets pulled through the mod.
