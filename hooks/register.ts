@@ -26,7 +26,7 @@ import { cleanPath, loadImage, type Io } from './load'
 import { cropRect, DEFAULT_VIEW, downscale, downscaleRegion, fit, shrinkToFit, transparency, TRANSPARENT, type Art, type View } from './pixelate'
 import type { Rgba } from './png'
 import { to256 } from './palette256'
-import { cellsFor, rowsFor } from './raster'
+import { cellsFor, quadCellsFor, rowsFor } from './raster'
 import { isScene, makeScene, SCENES, type Renderer, type SceneName } from './scenes'
 import { STYLES, stylize, type Style } from './styles'
 
@@ -34,8 +34,10 @@ type Layout = 'auto' | 'banner' | 'fit'
 type Scope = 'project' | 'global'
 type WhileWorking = 'slim' | 'full' | 'hide'
 type ColorMode = 'auto' | 'full' | '256'
+/** standard: two pixels per cell (half blocks). fine: four (quadrants), for nearly square cells. */
+type Pixels = 'standard' | 'fine'
 /** `rows` 0 means auto: about a quarter of the terminal. */
-interface Config { rows: number; colors: number; enabled: boolean; style: Style; layout: Layout; animate: boolean; whileWorking: WhileWorking; colorMode: ColorMode }
+interface Config { rows: number; colors: number; enabled: boolean; style: Style; layout: Layout; animate: boolean; whileWorking: WhileWorking; colorMode: ColorMode; pixels: Pixels }
 /**
  * What a scope's slot in the store holds: the image (RGB when fully opaque, a quarter smaller;
  * RGBA otherwise) and/or a scene. A scene wins while set, and keeps the image for switching back.
@@ -46,7 +48,7 @@ type Source =
   | { kind: 'image'; image: Rgba; name: string; clear: number }
   | { kind: 'scene'; scene: SceneName }
 
-const DEFAULTS: Config = { rows: 0, colors: 16, enabled: true, style: 'original', layout: 'auto', animate: true, whileWorking: 'slim', colorMode: 'auto' }
+const DEFAULTS: Config = { rows: 0, colors: 16, enabled: true, style: 'original', layout: 'auto', animate: true, whileWorking: 'slim', colorMode: 'auto', pixels: 'standard' }
 /** How tall the band gets while Claude works, in 'slim' mode: out of the way, still animating. */
 const SLIM_ROWS = 3
 /** Rows the band grows or shrinks by per frame when it changes height. */
@@ -74,6 +76,9 @@ export const SCENE_LABELS: Record<SceneName, string> = {
   fire: 'a wall of fire',
   creation: "Michelangelo's hands and a spark",
 }
+
+/** Pixels across for a band `cols` cells wide. */
+const pixelCols = (cols: number, pixels: Pixels) => (pixels === 'fine' ? cols * 2 : cols)
 
 const clampInt = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, Math.round(v)))
 /** Auto height: about a quarter of what the band may take, 4 to 8 rows. */
@@ -194,13 +199,13 @@ export const register: Register = (on) => {
     if (source?.kind !== 'image') return null
     const image = source.image
     const layout = layoutOf()
-    const key = `${layout}|${cols}x${rows}|${config.style}|${config.colors}|${view.focusX},${view.focusY},${view.zoom}|${source.name}`
+    const key = `${layout}|${cols}x${rows}|${config.pixels}|${config.style}|${config.colors}|${view.focusX},${view.focusY},${view.zoom}|${source.name}`
     if (art && artKey === key) return art
-    const w = cols, h = rows * 2
+    const w = pixelCols(cols, config.pixels), h = rows * 2
     if (layout === 'banner') {
       art = stylize(downscaleRegion(image, cropRect(image.width, image.height, w / h, view), w, h), config.style, config.colors)
     } else {
-      const f = fit(image.width, image.height, rows, cols)
+      const f = fit(image.width, image.height, rows, w)
       const inner = stylize(downscale(image, f.w, f.h), config.style, config.colors)
       const px = new Uint32Array(w * f.h).fill(TRANSPARENT)
       const left = Math.floor((w - f.w) / 2)
@@ -217,7 +222,7 @@ export const register: Register = (on) => {
    */
   function sceneArt(rows: number, cols: number): Art | null {
     if (source?.kind !== 'scene') return null
-    const w = cols, h = rows * 2
+    const w = pixelCols(cols, config.pixels), h = rows * 2
     const fullH = Math.max(h, fullRows() * 2)
     const flash = mood === 'done' ? ticks * FRAME_MS : null
     const key = `${source.scene}|${w}x${h}/${fullH}|${sceneT}|${flash}|${config.style}|${config.colors}`
@@ -249,7 +254,8 @@ export const register: Register = (on) => {
     // Scenes show working and done themselves (heavier rain, lightning); intro and error apply to both.
     const m = source.kind === 'scene' && (mood === 'working' || mood === 'done') ? 'idle' : mood
     const px = frame(a, m, ticks * FRAME_MS)
-    return cellsFor(a, use256() ? to256(px) : px)
+    const shown = use256() ? to256(px) : px
+    return config.pixels === 'fine' ? quadCellsFor(a, shown) : cellsFor(a, shown)
   }
 
   function blit() {
@@ -437,6 +443,12 @@ export const register: Register = (on) => {
     return mode === 'auto' ? `colours: auto (${now} in this terminal).` : `colours: ${now}.`
   }
 
+  async function setPixels(mode: string): Promise<string> {
+    if (!['standard', 'fine'].includes(mode)) return 'Usage: /pixelband pixels standard|fine'
+    config.pixels = mode as Pixels; await save()
+    return mode === 'fine' ? 'fine pixels: four per character, for fonts with tight line spacing.' : 'standard pixels: two per character.'
+  }
+
   async function setAnimate(move: boolean): Promise<string> {
     config.animate = move; await save()
     return move ? 'scenes animate.' : 'scenes hold still.'
@@ -584,10 +596,15 @@ export const register: Register = (on) => {
   })
 
   on('ui.render', { component: 'Pane', requestId: MENU }, ($, e, next) => {
-    const { Box, Text, Button, Select, Input } = $.ui.resolve(e) as any
+    const { Box, Text, Button, Input } = $.ui.resolve(e) as any
+    const ui = $.ui.resolve(e) as any
     const props = (e as any).props
     const width = Math.max(30, props.bodyColumns ?? 80)
     const fitText = (t: string, n: number) => (t.length > n ? `${t.slice(0, Math.max(1, n - 1))}…` : t)
+    // Every dropdown option fits the pane after its label: a wrapped row garbles the terminal.
+    const Select = ui.Select
+    const select = (p: { options: { value: string; label?: string }[] } & Record<string, unknown>) =>
+      h(Select, { ...p, options: p.options.map((o) => ({ value: o.value, label: fitText(o.label ?? o.value, width - 12) })) })
     // Every row stays on one line: a row that wraps makes the terminal redraw leave stale copies behind.
     const row = (...kids: unknown[]) => h(Box, { flexDirection: 'row', columnGap: 1 }, ...kids)
     const line = (t: string, style: object = {}) => h(Text, { wrap: 'truncate-end', ...style }, fitText(t, width))
@@ -603,7 +620,7 @@ export const register: Register = (on) => {
       props.isFocused
         ? line('Tab / ↑↓ move · Enter picks · Esc closes · changes show in the band live', { dimColor: true })
         : line('press ctrl+x then tab to use this menu · Esc closes', { color: 'yellow' }),
-      h(Select, {
+      select({
         key: 'source', label: 'Show     ', options, value: showing, autoFocus: true,
         onSelect: (v: string) => act(() => (v === 'image' ? showImage() : v.startsWith('scene:') ? setScene(v.slice(6), s) : Promise.resolve('')))(),
       }),
@@ -612,13 +629,13 @@ export const register: Register = (on) => {
         onSubmit: (v: string) => act(() => setImage(v, s))(),
       }),
       recent.length
-        ? h(Select, {
+        ? select({
           key: 'recent', label: 'Recent   ', value: '',
           options: [{ value: '', label: `${recent.length} newest in Downloads, Desktop, Pictures` }, ...recent.map((f) => ({ value: f.path, label: fitText(f.name, width - 14) }))],
           onSelect: (v: string) => { if (v) act(() => setImage(v, s))() },
         })
         : null,
-      h(Select, {
+      select({
         key: 'style', label: 'Style    ', value: config.style,
         options: STYLES.map((v) => ({ value: v })),
         onSelect: (v: string) => act(() => setStyle(v))(),
@@ -630,7 +647,7 @@ export const register: Register = (on) => {
         h(Button, { key: 'rows+', label: '+', onPress: act(() => setRows(rowsNow() + 1)) }),
         config.rows ? h(Button, { key: 'rows-auto', label: 'auto', plain: true, dimColor: true, onPress: act(() => setRows(0)) }) : null,
       ),
-      h(Select, {
+      select({
         key: 'working', label: 'Working  ', value: config.whileWorking,
         options: [
           { value: 'slim', label: `shrink to ${SLIM_ROWS} rows while Claude works` },
@@ -639,7 +656,15 @@ export const register: Register = (on) => {
         ],
         onSelect: (v: string) => act(() => setWhileWorking(v))(),
       }),
-      h(Select, {
+      select({
+        key: 'pixels', label: 'Pixels   ', value: config.pixels,
+        options: [
+          { value: 'standard', label: 'standard: 2 per character (most terminals)' },
+          { value: 'fine', label: 'fine: 4 per character (if pixels look wide)' },
+        ],
+        onSelect: (v: string) => act(() => setPixels(v))(),
+      }),
+      select({
         key: 'colormode', label: 'Colours  ', value: config.colorMode,
         options: [
           { value: 'auto', label: `auto (${only256 ? '256 colours: this looks like macOS Terminal' : 'full colour'})` },
@@ -661,7 +686,7 @@ export const register: Register = (on) => {
         )
         : row(h(Text, {}, 'Motion   '), h(Button, { key: 'animate', label: config.animate ? 'pause' : 'animate', onPress: act(() => setAnimate(!config.animate)) }), h(Text, { dimColor: true }, config.animate ? 'moving' : 'paused')),
       source
-        ? h(Select, {
+        ? select({
           key: 'scope', label: 'Where    ', value: s,
           options: [{ value: 'global', label: 'every project' }, { value: 'project', label: 'only this project' }],
           onSelect: (v: string) => act(() => setScope(v as Scope))(),
@@ -700,6 +725,8 @@ export const register: Register = (on) => {
       }
       case 'working':
         return reply(await setWhileWorking(arg.toLowerCase()))
+      case 'pixels':
+        return reply(await setPixels(arg.toLowerCase()))
       case 'colormode':
       case 'colourmode':
         return reply(await setColorMode(arg.toLowerCase()))
@@ -745,7 +772,7 @@ export const register: Register = (on) => {
         const where = scope === 'project' ? 'this project' : 'global'
         const status = !source ? 'nothing showing yet'
           : `showing ${source.kind === 'scene' ? `the ${source.scene} scene` : source.name} (${where})${source.kind === 'image' ? `, ${layoutOf()}` : ''}, ${config.style}, ${config.rows ? `${config.rows} rows` : 'auto height'}${use256() ? ', 256 colours' : ''}, ${config.enabled ? 'on' : 'off'}`
-        return reply(`${status}.\n/pixelband opens the menu. Or: set <image> [--here] · scene <${SCENES.join('|')}> · style <${STYLES.join('|')}> · layout <banner|fit|auto> · move <up|down|left|right> · zoom <in|out|reset> · size <rows|auto> · working <slim|full|hide> · colormode <auto|full|256> · colors <n> · animate <on|off> · on · off · clear [--here] · demo <working|done|error|intro>`)
+        return reply(`${status}.\n/pixelband opens the menu. Or: set <image> [--here] · scene <${SCENES.join('|')}> · style <${STYLES.join('|')}> · layout <banner|fit|auto> · move <up|down|left|right> · zoom <in|out|reset> · size <rows|auto> · working <slim|full|hide> · colormode <auto|full|256> · pixels <standard|fine> · colors <n> · animate <on|off> · on · off · clear [--here] · demo <working|done|error|intro>`)
       }
       default:
         return reply(`unknown command "${sub}". /pixelband help lists them, or /pixelband alone opens the menu.`)

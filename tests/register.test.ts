@@ -537,3 +537,20 @@ describe('scope', () => {
     expect(await text($.command.run(pix('status')))).toMatch(/^showing the creation scene \(this project\)/)
   })
 })
+
+describe('fine pixels', () => {
+  test('fine pixels draw four pixels per character in the same space', async ($, on) => {
+    const w = world(on, { '/photo.png': IMAGES.rgb8.png! })
+    await $.session.start(SESSION)
+    await $.command.run(pix('set /photo.png'))
+    await w.clock.advance(1000)
+    expect(await text($.command.run(pix('pixels fine')))).toMatch(/^fine pixels/)
+    const ui = await $.ui.mount(band())
+    const art = await ui.find({ key: 'art' })
+    expect([art?.props.columns, art?.props.rows]).toEqual([80, 4])
+    const glyphs = new Set(cellsOf(art?.props.cells as string).filter((_, i) => i % 3 === 0))
+    expect([...glyphs].some((g) => ![0x2580, 0x2584, 0x20].includes(g))).toBe(true)   // side halves and quadrants, which standard never uses
+    expect(await text($.command.run(pix('pixels huge')))).toMatch(/^Usage/)
+    await ui.unmount()
+  })
+})
