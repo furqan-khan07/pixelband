@@ -627,3 +627,27 @@ describe('per-terminal pixels', () => {
     await ui.unmount()
   })
 })
+
+describe('review fixes', () => {
+  test('"only this project" moves the banner: it stops showing everywhere else', async ($, on) => {
+    world(on)
+    await $.session.start(SESSION)
+    await $.command.run(pix('scene city'))
+    await $.command.run(pix(''))
+    const menu = await $.ui.mount(PANE)
+    await menu.select({ key: 'scope', value: 'project' })
+    await settle()
+    expect(await text($.command.run(pix('status')))).toMatch(/\(this project\)/)
+    // Clearing this project's banner now leaves nothing: there's no global copy left behind.
+    await $.command.run(pix('clear --here'))
+    expect(await text($.command.run(pix('status')))).toMatch(/^nothing showing yet/)
+  })
+
+  test('clear clears what is showing, even when it is this project\'s own banner', async ($, on) => {
+    world(on)
+    await $.session.start(SESSION)
+    await $.command.run(pix('scene city --here'))
+    expect(await text($.command.run(pix('clear')))).toBe("cleared this project's banner.")
+    expect(await text($.command.run(pix('status')))).toMatch(/^nothing showing yet/)
+  })
+})

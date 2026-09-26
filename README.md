@@ -135,8 +135,9 @@ calls: $.clock.after, $.clock.every, $.command.register, $.env.get, $.fs.list, $
 env reads: COLORTERM, HOME, TERM_PROGRAM, TMPDIR
 ```
 
-`$.process.run` is only ever `sips`, `magick`/`convert` (to convert a photo) and `rm` (to delete
-the temporary file that conversion makes). `$.fs.list` and `$.fs.stat` only look at Downloads,
+`$.process.run` is only ever `sips`, `magick`/`convert` (to convert a photo), `split` (to read a
+GIF over 4 MB in pieces, since Claude Code reads at most 4 MB at once) and `rm` (to delete the
+temporary files those make). `$.fs.list` and `$.fs.stat` only look at Downloads,
 Desktop and Pictures, to list your newest images in the menu.
 
 ## Limitations

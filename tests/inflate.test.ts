@@ -1,5 +1,5 @@
 import { describe, expect, test, tier } from 'claude-code/testing'
-import { inflateZlib } from '../hooks/inflate'
+import { inflateRaw, inflateZlib } from '../hooks/inflate'
 import { ZLIB } from './fixtures/images'
 
 tier('user')
@@ -18,5 +18,13 @@ describe('inflate', () => {
   test('rejects a truncated stream instead of hanging', async () => {
     const z = b64(ZLIB.dynamic.z)
     expect(() => inflateZlib(z.subarray(0, z.length >> 1))).toThrow()
+  })
+
+  test('output past the limit is refused, so a tiny file cannot claim gigabytes', async () => {
+    // One stored (uncompressed) block of 5000 bytes: fine with room, refused with a 100-byte limit.
+    const block = new Uint8Array(5 + 5000)
+    block[0] = 1; block[1] = 5000 & 255; block[2] = 5000 >> 8; block[3] = ~5000 & 255; block[4] = (~5000 >> 8) & 255
+    expect(inflateRaw(block).length).toBe(5000)
+    expect(() => inflateRaw(block, 0, 0, 100)).toThrow(/larger than expected/)
   })
 })

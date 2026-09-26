@@ -43,4 +43,13 @@ describe('gif', () => {
     expect(isGif(Uint8Array.fromBase64(GIFS.still.gif))).toBe(true)
     expect(isGif(new TextEncoder().encode('GIF is a nice format'))).toBe(false)
   })
+
+  test('a frame claiming to be vastly bigger than its canvas is refused, not allocated', async () => {
+    const b = Uint8Array.fromBase64(GIFS.still.gif).slice()
+    let p = 13 + (b[10] & 0x80 ? 3 * (1 << ((b[10] & 7) + 1)) : 0)
+    while (b[p] === 0x21) { p += 2; while (b[p] !== 0) p += b[p] + 1; p++ }
+    expect(b[p]).toBe(0x2c)
+    b[p + 5] = 0xff; b[p + 6] = 0xff; b[p + 7] = 0xff; b[p + 8] = 0xff   // width and height 65535
+    expect(() => decodeGif(b, () => {})).toThrow(/far bigger than its/)
+  })
 })

@@ -97,4 +97,44 @@ describe('load', () => {
     expect(r.frames!.length).toBeLessThanOrEqual(MAX_FRAMES)
     expect(r.delays!.reduce((a, b) => a + b, 0)).toBe(550 * copies)
   })
+
+  test('a GIF over 4 MB (more than one read allows) is read in pieces with split, and the pieces are removed', async () => {
+    const src = Uint8Array.fromBase64(GIFS.bounce.gif)
+    const header = src.subarray(0, 13 + 3 * (1 << ((src[10] & 7) + 1)))
+    const body = src.subarray(header.length, src.length - 1)
+    const copies = Math.ceil((4.3 * 1024 * 1024) / body.length)
+    const big = new Uint8Array(header.length + body.length * copies + 1)
+    big.set(header)
+    for (let i = 0; i < copies; i++) big.set(body, header.length + i * body.length)
+    big[big.length - 1] = 0x3b
+    const files: Record<string, string> = {}
+    const runs: string[][] = []
+    const io: Io = {
+      readBase64: async (p) => { if (!(p in files) && p !== '/big.gif') throw new Error('ENOENT'); if (p === '/big.gif') throw new Error('over 4 MiB'); return { base64: files[p] } },
+      tmpdir: async () => '/tmp',
+      size: async () => big.length,
+      run: async (argv) => {
+        runs.push(argv)
+        if (argv[0] === 'split') {
+          const n = Number(argv[2]), prefix = argv[4]
+          for (let i = 0, k = 0; i < big.length; i += n, k++) files[prefix + String.fromCharCode(97 + Math.floor(k / 26), 97 + (k % 26))] = big.subarray(i, i + n).toBase64()
+        }
+        if (argv[0] === 'rm') for (const f of argv.slice(2)) delete files[f]
+        return { exitCode: 0, stdout: '', stderr: '' }
+      },
+    }
+    const r = await loadImage(io, '/big.gif')
+    expect(r.via).toBe('gif')
+    expect(r.frames!.length).toBeGreaterThan(1)
+    expect(runs.map((a) => a[0])).toEqual(['split', 'rm'])
+    expect(Object.keys(files)).toEqual([])                      // every piece deleted
+  })
+
+  test('a still over 4 MB goes straight to the OS tool, which reads it itself', async () => {
+    const { io, runs } = fakeIo({}, () => 0)
+    io.size = async () => 9 * 1024 * 1024
+    const r = await loadImage(io, '/huge.png')
+    expect(r.via).toBe('sips')
+    expect(runs[0][0]).toBe('sips')
+  })
 })
