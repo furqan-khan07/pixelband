@@ -21,6 +21,9 @@ claude plugin marketplace add furqan-khan07/pixelband
 claude plugin install pixelband@pixelband
 ```
 
+It runs in the `claude` command in a terminal, including the built-in terminal of VS Code or
+Cursor. The Claude desktop app's Code tab doesn't draw mods yet.
+
 Mods are in preview right now, so start Claude Code with the preview flag:
 
 ```bash
@@ -142,6 +145,9 @@ Desktop and Pictures, to list your newest images in the menu.
 
 ## Limitations
 
+- **Terminal only, for now.** Mods draw in the `claude` command in a terminal (VS Code's and
+  Cursor's built-in terminals count). The desktop app's Code tab and the IDE extension panels
+  don't render mods yet, so pixelband shows nothing there.
 - **Mods are in preview.** Anthropic says the API may change between releases, so pixelband might
   break on an update until mods ship for real.
 - **Non-PNG images need `sips` or ImageMagick.** Every Mac has `sips`; on Linux, install
