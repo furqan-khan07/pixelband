@@ -28,9 +28,9 @@ or from inside a Claude Code session:
 /plugin install pixelband@pixelband
 ```
 
-Run `/reload-plugins` if a session was already open. It draws in the `claude` command in a
-terminal, including the built-in terminal of VS Code, Cursor or JetBrains. The desktop app draws
-mods too, but not pixel grids yet, so pixelband shows nothing there.
+Run `/reload-plugins` if a session was already open. It works in the `claude` command in a
+terminal (including VS Code's, Cursor's and JetBrains' built-in terminals) and in the Code tab of
+the Claude desktop app.
 
 Then, inside Claude Code, type `/pixelband` to open the menu. Pick a scene, or drag an image into
 the menu's image field (your newest downloads and screenshots are listed there too), and choose a
@@ -147,9 +147,9 @@ Desktop and Pictures, to list your newest images in the menu.
 
 ## Limitations
 
-- **Terminal only, for now.** pixelband draws with a pixel grid (`Raster`), which only the
-  terminal has (VS Code's, Cursor's and JetBrains' built-in terminals count). The desktop app's
-  Code tab draws other mods but not that, and the VS Code extension's chat panel draws no mods.
+- **Terminal and desktop app.** In the terminal pixelband draws a grid of coloured cells; the
+  desktop app has no such grid, so there it draws the same pixels as an SVG image and redraws it
+  for each frame. The VS Code extension's chat panel draws no mods, so it shows nothing there.
 - **Non-PNG images need `sips` or ImageMagick.** Every Mac has `sips`; on Linux, install
   ImageMagick or use a PNG.
 - **Colours are best in a true-colour terminal** (iTerm2, Ghostty, kitty, WezTerm, VS Code, and

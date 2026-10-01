@@ -10,15 +10,18 @@ const band = (isWorking = false, maxRows = 10) => ({
   props: { hasSurvey: false, isWorking, maxRows, bodyColumns: 80, scroll: { offset: 0, bodyRows: maxRows }, view: {} },
 }) as const
 
+const desktopBand = (isWorking = false, maxRows = 10) => ({ ...band(isWorking, maxRows), surface: 'desktop' }) as const
+
 /** Everything beneath the mod: store, env, clock, files, and a record of every frame blitted. */
 function world(on: any, files: Record<string, string> = {}, mtimes: Record<string, number> = {}, env: Record<string, string> = {}, saved: Record<string, unknown> = {}) {
   const blits: any[] = []
   const panes: any[] = []
   const closed: any[] = []
+  const redraws = { n: 0 }
   on('session.start', ($: any, e: any) => ({ cwd: e.cwd }))
   on('session.root', () => ({ value: '/work' }))
   on('command.register', ($: any, e: any) => ({ value: { command: e.name } }))
-  on('ui.invalidate', () => ({ value: undefined }))
+  on('ui.invalidate', () => { redraws.n++; return { value: undefined } })
   on('ui.blit', ($: any, e: any) => { blits.push(e); return { value: undefined } })
   on('fs.read', ($: any, e: any) => (e.path in files ? { value: { base64: files[e.path] } } : { deny: 'no such file' }))
   on('process.run', () => ({ value: { exitCode: 127, stdout: '', stderr: 'not installed' } }))
@@ -38,7 +41,7 @@ function world(on: any, files: Record<string, string> = {}, mtimes: Record<strin
   mock.store(on, saved)
   mock.env(on, { HOME: '/Users/me', TMPDIR: '/tmp', ...env })
   const clock = mock.clock(on)
-  return { blits, clock, panes, closed }
+  return { blits, clock, panes, closed, redraws }
 }
 
 // Only the fields pixelband reads; the engine's other fields don't matter to it.
@@ -649,5 +652,33 @@ describe('review fixes', () => {
     await $.command.run(pix('scene city --here'))
     expect(await text($.command.run(pix('clear')))).toBe("cleared this project's banner.")
     expect(await text($.command.run(pix('status')))).toMatch(/^nothing showing yet/)
+  })
+
+  test('in the desktop app the band is an Svg of the same pixels', async ($, on) => {
+    world(on, { '/Users/me/art.png': IMAGES.rgba8.png! })
+    await $.session.start({ ...SESSION, surface: 'desktop' })
+    await $.command.run(pix('set ~/art.png'))
+    const ui = await $.ui.mount(desktopBand())
+    const svg = await ui.find({ type: 'Svg' })
+    expect(svg).toBeDefined()
+    expect(svg?.props.source).toMatch(/^<svg [^>]*viewBox="0 0 80 8"/)   // 80 columns, 4 rows of two pixels
+    expect(svg?.props.alt).toBe('pixelband: art.png')
+    expect(await ui.find({ key: 'art' })).toBeUndefined()                 // no Raster there
+    await ui.unmount()
+  })
+
+  test('in the desktop app a scene animates by redrawing, not blitting', async ($, on) => {
+    const w = world(on)
+    await $.session.start({ ...SESSION, surface: 'desktop' })
+    await $.command.run(pix('scene city'))
+    const ui = await $.ui.mount(desktopBand())
+    const before = w.redraws.n
+    await w.clock.advance(800)
+    expect(w.redraws.n - before).toBeGreaterThan(5)
+    expect(w.blits.length).toBe(0)
+    const svg = await ui.find({ type: 'Svg' })
+    expect(svg?.props.alt).toBe('pixelband: rain on a city at night')
+    expect(String(svg?.props.source).length).toBeLessThanOrEqual(131072)
+    await ui.unmount()
   })
 })

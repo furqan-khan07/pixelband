@@ -18,7 +18,9 @@
  * How it hangs together: the band is drawn by hooking `ui.render` for `AbovePrompt` with one Raster
  * element. Turn events set a mood; while something is animating (a mood, or a scene), a clock timer
  * builds the next frame and swaps it into the Raster with `$.ui.blit`, so nothing else redraws. The
- * menu is a pane (`ui.render` for `Pane`) whose controls call the same actions as the commands.
+ * desktop app has no Raster, so there the band is an `Svg` of the same pixels, and each frame is a
+ * redraw. The menu is a pane (`ui.render` for `Pane`) whose controls call the same actions as the
+ * commands.
  */
 import type { Register, RenderElement } from 'claude-code'
 import { decodeAnim, encodeAnim, frameAt, spread, stack, type Anim, type StoredAnim } from './anim'
@@ -28,6 +30,7 @@ import { cropRect, DEFAULT_VIEW, downscale, downscaleRegion, fit, shrinkToFit, t
 import type { Rgba } from './png'
 import { to256 } from './palette256'
 import { cellsFor, quadCellsFor, rowsFor } from './raster'
+import { svgWithin } from './svg'
 import { isScene, makeScene, SCENES, type Renderer, type SceneName } from './scenes'
 import { STYLES, stylize, type Style } from './styles'
 
@@ -147,8 +150,12 @@ export const register: Register = (on) => {
   let only256 = false
   /** Which terminal app this session runs in (TERM_PROGRAM), for settings that depend on it. */
   let terminal = 'unknown'
-  const pixelsNow = (): Pixels => config.pixelsFor?.[terminal] ?? 'standard'
-  const use256 = () => config.colorMode === '256' || (config.colorMode === 'auto' && only256)
+  /** The app drawing the band: `terminal` draws a Raster; the others (desktop) an Svg. */
+  let surface = 'terminal'
+  const inTerminal = () => surface === 'terminal'
+  // Fine pixels and the 256-colour fallback are about terminal fonts and colours; an Svg has neither.
+  const pixelsNow = (): Pixels => (inTerminal() ? config.pixelsFor?.[terminal] ?? 'standard' : 'standard')
+  const use256 = () => inTerminal() && (config.colorMode === '256' || (config.colorMode === 'auto' && only256))
   let shownRows = -1
 
   // The menu's own state.
@@ -269,20 +276,28 @@ export const register: Register = (on) => {
     return a
   }
 
-  function currentCells(): string | null {
+  /** This moment's art and pixels, with the mood's effect applied. */
+  function currentFrame(): { a: Art; px: Uint32Array } | null {
     if (!band || !source) return null
     const { rows, cols } = band.want
     const a = source.kind === 'image' ? imageArt(rows, cols) : sceneArt(rows, cols)
     if (!a) return null
     // Scenes show working and done themselves (heavier rain, lightning); intro and error apply to both.
     const m = source.kind === 'scene' && (mood === 'working' || mood === 'done') ? 'idle' : mood
-    const px = frame(a, m, ticks * FRAME_MS)
-    const shown = use256() ? to256(px) : px
-    return pixelsNow() === 'fine' ? quadCellsFor(a, shown) : cellsFor(a, shown)
+    return { a, px: frame(a, m, ticks * FRAME_MS) }
+  }
+
+  function currentCells(): string | null {
+    const f = currentFrame()
+    if (!f) return null
+    const shown = use256() ? to256(f.px) : f.px
+    return pixelsNow() === 'fine' ? quadCellsFor(f.a, shown) : cellsFor(f.a, shown)
   }
 
   function blit() {
     if (!band || !host) return
+    // An Svg can't be patched in place: the next frame is a redraw.
+    if (!inTerminal()) { redraw(); return }
     const cells = currentCells()
     if (!cells) return
     Promise.resolve(host.blit({ requestId: band.requestId, key: KEY, cells, columns: band.columns, rows: band.rows }))
@@ -611,7 +626,9 @@ export const register: Register = (on) => {
   on('ui.render', { component: 'AbovePrompt' }, ($, e, next) => {
     const props = (e as any).props
     if (!config.enabled || props.hasSurvey) { band = null; syncTimer(); return next(e) }
-    const { Box, Text, Raster } = $.ui.resolve(e) as any
+    const { Box, Text, Raster, Svg } = $.ui.resolve(e) as any
+    surface = (e as any).surface ?? 'terminal'
+    if (!inTerminal() && !Svg) { band = null; syncTimer(); return next(e) }
     if (!source) {
       band = null
       if (!ready) return next(e)
@@ -632,6 +649,12 @@ export const register: Register = (on) => {
 
     syncTimer()
 
+    if (!inTerminal()) {
+      const f = currentFrame()
+      if (!f) return next(e)
+      const alt = source.kind === 'scene' ? `pixelband: ${SCENE_LABELS[source.scene]}` : `pixelband: ${source.name}`
+      return h(Box, { flexDirection: 'row' }, h(Svg, { source: svgWithin(f.a, f.px), alt })) as RenderElement
+    }
     const cells = currentCells()
     if (!cells) return next(e)
     return h(Box, { flexDirection: 'row' }, h(Raster, { key: KEY, columns: band.columns, rows: band.rows, cells })) as RenderElement
