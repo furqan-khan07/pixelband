@@ -13,22 +13,24 @@ something errors. It's a small thing, but it makes the terminal feel like your o
 
 ## Try it
 
-pixelband is a **Claude Mod**, built on the function hooks Anthropic is shipping for Claude Code.
-Install it from your shell:
+pixelband is a [Claude Code mod](https://code.claude.com/docs/en/plugins/mods/overview). Mods need
+Claude Code 2.1.287 or later (`claude update`). Install it from your shell:
 
 ```bash
 claude plugin marketplace add furqan-khan07/pixelband
 claude plugin install pixelband@pixelband
 ```
 
-It runs in the `claude` command in a terminal, including the built-in terminal of VS Code or
-Cursor. The Claude desktop app's Code tab doesn't draw mods yet.
+or from inside a Claude Code session:
 
-Mods are in preview right now, so start Claude Code with the preview flag:
-
-```bash
-CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1 claude
 ```
+/plugin marketplace add furqan-khan07/pixelband
+/plugin install pixelband@pixelband
+```
+
+Run `/reload-plugins` if a session was already open. It draws in the `claude` command in a
+terminal, including the built-in terminal of VS Code, Cursor or JetBrains. The desktop app draws
+mods too, but not pixel grids yet, so pixelband shows nothing there.
 
 Then, inside Claude Code, type `/pixelband` to open the menu. Pick a scene, or drag an image into
 the menu's image field (your newest downloads and screenshots are listed there too), and choose a
@@ -145,11 +147,9 @@ Desktop and Pictures, to list your newest images in the menu.
 
 ## Limitations
 
-- **Terminal only, for now.** Mods draw in the `claude` command in a terminal (VS Code's and
-  Cursor's built-in terminals count). The desktop app's Code tab and the IDE extension panels
-  don't render mods yet, so pixelband shows nothing there.
-- **Mods are in preview.** Anthropic says the API may change between releases, so pixelband might
-  break on an update until mods ship for real.
+- **Terminal only, for now.** pixelband draws with a pixel grid (`Raster`), which only the
+  terminal has (VS Code's, Cursor's and JetBrains' built-in terminals count). The desktop app's
+  Code tab draws other mods but not that, and the VS Code extension's chat panel draws no mods.
 - **Non-PNG images need `sips` or ImageMagick.** Every Mac has `sips`; on Linux, install
   ImageMagick or use a PNG.
 - **Colours are best in a true-colour terminal** (iTerm2, Ghostty, kitty, WezTerm, VS Code, and
@@ -165,14 +165,14 @@ To hack on it, clone the repo and load it straight from the folder:
 
 ```bash
 git clone https://github.com/furqan-khan07/pixelband
-CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1 claude --plugin-dir ./pixelband
+claude --plugin-dir ./pixelband
 ```
 
 ```bash
-tools/validate.sh                                          # what the engine will load and refuse
-CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1 claude plugin test .   # the test suite
-python tests/fixtures/make_fixtures.py                     # rebuild the image fixtures (needs Pillow)
-python tests/fixtures/make_gif_fixtures.py                 # rebuild the GIF fixtures
+tools/validate.sh                             # what the engine will load and refuse
+claude plugin test .                          # the test suite
+python tests/fixtures/make_fixtures.py        # rebuild the image fixtures (needs Pillow)
+python tests/fixtures/make_gif_fixtures.py    # rebuild the GIF fixtures
 ```
 
 The PNG, BMP and GIF decoders are checked pixel for pixel against Pillow, and against real `sips`
