@@ -1,4 +1,5 @@
 {
   "description": "pixelband: /pixelband and the pixel-art band above the prompt, animated on turn start, finish, and error",
-  "modules": ["./register.ts"]
+  "modules": ["./register.ts"],
+  "hooks": {}
 }
