@@ -4,7 +4,7 @@
 set -e
 root=$(cd "$(dirname "$0")/.." && pwd)
 tmp=$(mktemp -d)
-cp -R "$root/.claude-plugin" "$root/hooks" "$tmp/"
+cp -R "$root/.claude-plugin" "$root/hooks" "$root/types" "$tmp/"
 rm -f "$tmp/.claude-plugin/marketplace.json"
 claude plugin validate "$root"
 claude plugin validate "$tmp"

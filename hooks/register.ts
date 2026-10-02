@@ -103,6 +103,8 @@ interface Host {
   after: (ms: number, fn: () => void) => unknown
   blit: (args: { requestId: string; key: string; cells: string; columns: number; rows: number }) => unknown
   invalidate: () => unknown
+  /** Redraws only the sites that read the frame counter (the band), for apps without blit. */
+  bump: () => unknown
   get: (key: string) => Promise<unknown>
   set: (key: string, value: unknown) => Promise<unknown>
   del: (key: string) => Promise<unknown>
@@ -157,6 +159,8 @@ export const register: Register = (on) => {
   const pixelsNow = (): Pixels => (inTerminal() ? config.pixelsFor?.[terminal] ?? 'standard' : 'standard')
   const use256 = () => inTerminal() && (config.colorMode === '256' || (config.colorMode === 'auto' && only256))
   let shownRows = -1
+  /** The frame counter the desktop band subscribes to (see Host.bump). */
+  let frameNo = 0
 
   // The menu's own state.
   let note = ''
@@ -296,8 +300,9 @@ export const register: Register = (on) => {
 
   function blit() {
     if (!band || !host) return
-    // An Svg can't be patched in place: the next frame is a redraw.
-    if (!inTerminal()) { redraw(); return }
+    // An Svg can't be patched in place: the next frame is a redraw, of the band alone. A plain
+    // invalidate would redraw the menu too, rebuilding its buttons under the pointer every frame.
+    if (!inTerminal()) { Promise.resolve(host.bump()).catch(() => redraw()); return }
     const cells = currentCells()
     if (!cells) return
     Promise.resolve(host.blit({ requestId: band.requestId, key: KEY, cells, columns: band.columns, rows: band.rows }))
@@ -576,6 +581,7 @@ export const register: Register = (on) => {
       after: (ms, fn) => $.clock.after(ms, fn),
       blit: (args) => $.ui.blit(args),
       invalidate: () => $.ui.invalidate('ui.render'),
+      bump: () => $.state.set({ plugin: 'pixelband', key: 'frame' }, ++frameNo),
       get: (key) => $.store.get(key),
       set: (key, value) => $.store.set(key, value as any),
       del: (key) => $.store.delete(key),
@@ -623,7 +629,7 @@ export const register: Register = (on) => {
     return next(e)
   })
 
-  on('ui.render', { component: 'AbovePrompt' }, ($, e, next) => {
+  on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     const props = (e as any).props
     if (!config.enabled || props.hasSurvey) { band = null; syncTimer(); return next(e) }
     const { Box, Text, Raster, Svg } = $.ui.resolve(e) as any
@@ -650,6 +656,8 @@ export const register: Register = (on) => {
     syncTimer()
 
     if (!inTerminal()) {
+      // Reading the counter subscribes the band to it, so each bump redraws this hook alone.
+      await $.state.get({ plugin: 'pixelband', key: 'frame' })
       const f = currentFrame()
       if (!f) return next(e)
       const alt = source.kind === 'scene' ? `pixelband: ${SCENE_LABELS[source.scene]}` : `pixelband: ${source.name}`

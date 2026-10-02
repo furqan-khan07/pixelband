@@ -18,10 +18,13 @@ function world(on: any, files: Record<string, string> = {}, mtimes: Record<strin
   const panes: any[] = []
   const closed: any[] = []
   const redraws = { n: 0 }
+  const bumps: any[] = []
   on('session.start', ($: any, e: any) => ({ cwd: e.cwd }))
   on('session.root', () => ({ value: '/work' }))
   on('command.register', ($: any, e: any) => ({ value: { command: e.name } }))
   on('ui.invalidate', () => { redraws.n++; return { value: undefined } })
+  on('state.get', () => ({ value: { value: bumps.length, version: bumps.length } }))
+  on('state.set', ($: any, e: any) => { bumps.push(e); return { value: { isSet: true, version: bumps.length } } })
   on('ui.blit', ($: any, e: any) => { blits.push(e); return { value: undefined } })
   on('fs.read', ($: any, e: any) => (e.path in files ? { value: { base64: files[e.path] } } : { deny: 'no such file' }))
   on('process.run', () => ({ value: { exitCode: 127, stdout: '', stderr: 'not installed' } }))
@@ -41,7 +44,7 @@ function world(on: any, files: Record<string, string> = {}, mtimes: Record<strin
   mock.store(on, saved)
   mock.env(on, { HOME: '/Users/me', TMPDIR: '/tmp', ...env })
   const clock = mock.clock(on)
-  return { blits, clock, panes, closed, redraws }
+  return { blits, clock, panes, closed, redraws, bumps }
 }
 
 // Only the fields pixelband reads; the engine's other fields don't matter to it.
@@ -667,14 +670,18 @@ describe('review fixes', () => {
     await ui.unmount()
   })
 
-  test('in the desktop app a scene animates by redrawing, not blitting', async ($, on) => {
+  test('in the desktop app a scene animates by redrawing the band alone, not blitting', async ($, on) => {
     const w = world(on)
     await $.session.start({ ...SESSION, surface: 'desktop' })
     await $.command.run(pix('scene city'))
     const ui = await $.ui.mount(desktopBand())
     const before = w.redraws.n
     await w.clock.advance(800)
-    expect(w.redraws.n - before).toBeGreaterThan(5)
+    // Each frame bumps the counter only the band reads; a full invalidate would also rebuild the
+    // menu's buttons every frame, and then they can't be clicked.
+    expect(w.bumps.length).toBeGreaterThan(5)
+    expect(w.bumps.every((b) => b.plugin === 'pixelband' && b.key === 'frame')).toBe(true)
+    expect(w.redraws.n).toBe(before)
     expect(w.blits.length).toBe(0)
     const svg = await ui.find({ type: 'Svg' })
     expect(svg?.props.alt).toBe('pixelband: rain on a city at night')
