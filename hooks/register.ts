@@ -28,7 +28,7 @@ import { DURATION, FRAME_MS, frame, isOneShot, type Mood } from './effects'
 import { cleanPath, loadImage, type Io } from './load'
 import { cropRect, DEFAULT_VIEW, downscale, downscaleRegion, fit, shrinkToFit, transparency, TRANSPARENT, type Art, type View } from './pixelate'
 import type { Rgba } from './png'
-import { to256 } from './palette256'
+import { brighten, to256 } from './palette256'
 import { cellsFor, quadCellsFor, rowsFor } from './raster'
 import { svgWithin } from './svg'
 import { isScene, makeScene, SCENES, type Renderer, type SceneName } from './scenes'
@@ -72,6 +72,8 @@ const MENU = 'pixelband'
 const REPO_URL = 'https://github.com/furqan-khan07/pixelband'
 const IMAGE_FILE = /\.(png|jpe?g|heic|heif|webp|gif|bmp|tiff?|avif)$/i
 const RECENT_DIRS = ['Downloads', 'Desktop', 'Pictures']
+/** How much the creation scene is lightened in 256-colour terminals (see palette256's brighten). */
+const CREATION_LIFT_256 = 1.25
 
 /** Where each scene's slim strip looks, as a fraction of its height: windows over the street, the planet... */
 const SLIM_FOCUS: Record<SceneName, number> = { city: 0.66, space: 0.58, aurora: 0.5, fire: 0.7, creation: 0.5, matrix: 0.5, aquarium: 0.55 }
@@ -294,7 +296,10 @@ export const register: Register = (on) => {
   function currentCells(): string | null {
     const f = currentFrame()
     if (!f) return null
-    const shown = use256() ? to256(f.px) : f.px
+    // The creation scene is lit low for its spark; in 256 colours that lands where the palette has
+    // no browns, so it's lifted first (see brighten).
+    const lifted = source?.kind === 'scene' && source.scene === 'creation' ? brighten(f.px, CREATION_LIFT_256) : f.px
+    const shown = use256() ? to256(lifted) : f.px
     return pixelsNow() === 'fine' ? quadCellsFor(f.a, shown) : cellsFor(f.a, shown)
   }
 

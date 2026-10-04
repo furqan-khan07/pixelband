@@ -70,3 +70,19 @@ export function to256(px: Uint32Array): Uint32Array {
   }
   return out
 }
+
+/**
+ * Lighten a frame by `f` before it goes to the palette. The cube has hardly any dark browns (its
+ * steps are 0, 95, 135), so a dim, warm picture such as the creation scene's fresco comes out as
+ * grey shadows and mustard skin; lifted into the 135-215 range, where the cube has tans and
+ * peaches, it reads as skin again.
+ */
+export function brighten(px: Uint32Array, f: number): Uint32Array {
+  const out = new Uint32Array(px.length)
+  const ch = (v: number) => Math.min(255, Math.round(v * f))
+  for (let i = 0; i < px.length; i++) {
+    const c = px[i]
+    out[i] = c === TRANSPARENT ? c : (ch((c >> 16) & 255) << 16) | (ch((c >> 8) & 255) << 8) | ch(c & 255)
+  }
+  return out
+}
