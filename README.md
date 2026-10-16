@@ -54,7 +54,7 @@ Once mods ship properly, the flag won't be needed.
 | | |
 |---|---|
 | `/pixelband` | open the menu |
-| `/pixelband scene <name>` | an animated scene: `creation`, `city` (rain on a city at night), `space`, `aurora`, `fire`, `matrix` or `aquarium` |
+| `/pixelband scene <name>` | an animated scene: `creation`, `city` (rain on a city at night), `space`, `aurora`, `fire`, `matrix`, `aquarium` or `halloween` |
 | `/pixelband set <image>` | use an image: PNG, JPEG, HEIC (iPhone photos), WebP and more. **Animated GIFs play**, looping, with their own timing |
 | `/pixelband set <image> --here` | use it for **this project only**, so each repo gets its own banner |
 | `/pixelband style <name>` | `original`, `gameboy`, `pico8`, `mono` or `sepia` |
@@ -91,6 +91,7 @@ Each scene is drawn from code, not a video, and reacts to what Claude is doing:
 | `fire` | low flames over your terminal's own background | the flames climb | a burst of embers |
 | `matrix` | green code raining down | it pours | a bright scan sweeps down |
 | `aquarium` | fish, bubbles and swaying weed | the fish dart about and the bubbles pick up | a burst of bubbles |
+| `halloween` | skeletons climb out of their graves below a haunted castle, at random | they rise more often and more bats fly | lightning, and every skeleton rises at once |
 
 `creation` is built from Michelangelo's *The Creation of Adam* (c. 1511), which is in the public
 domain, via [Wikimedia Commons](https://commons.wikimedia.org/wiki/File:Michelangelo_-_Creation_of_Adam_(cropped).jpg).

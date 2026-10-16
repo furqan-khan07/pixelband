@@ -8,6 +8,7 @@
  *   creation Michelangelo's hands, and a spark jumping the gap between the fingertips
  *   matrix   green code raining down; it pours while Claude works
  *   aquarium fish, bubbles and swaying weed; the fish dart about while Claude works
+ *   halloween skeletons climb out of their graves below a haunted castle
  *
  * A scene is made for one band size and then asked for frames. Each frame gets the time, an
  * `energy` from 0 (idle) to 1 (Claude working) that eases between the two, and `flash`: how long
@@ -19,7 +20,7 @@ import { downscaleRegion, TRANSPARENT } from './pixelate'
 import type { Rgba } from './png'
 import { stylize } from './styles'
 
-export const SCENES = ['city', 'space', 'aurora', 'fire', 'creation', 'matrix', 'aquarium'] as const
+export const SCENES = ['city', 'space', 'aurora', 'fire', 'creation', 'matrix', 'aquarium', 'halloween'] as const
 export type SceneName = (typeof SCENES)[number]
 
 export interface SceneInput {
@@ -49,6 +50,7 @@ export function makeScene(name: SceneName, w: number, h: number): Renderer {
     case 'creation': return creation(w, h)
     case 'matrix': return matrix(w, h)
     case 'aquarium': return aquarium(w, h)
+    case 'halloween': return halloween(w, h)
   }
 }
 
@@ -725,6 +727,204 @@ function aquarium(w: number, h: number): Renderer {
       const eyeX = fi.dir > 0 ? x0 + fi.len - 2 : x0 + 1
       c.set(eyeX, y0 - 1 >= 0 && fi.len > 4 ? y0 : y0, [16, 16, 24])
     }
+    return c.pack()
+  }
+}
+
+// ---------------------------------------------------------------------------------------------
+// halloween: skeletons climbing out of their graves below a haunted castle
+
+/** A sprite drawn from rows of characters; '.' is see-through, every other character a colour. */
+function sprite(c: Canvas, rows: readonly string[], x0: number, y0: number, pal: Record<string, Rgb>, flip = false, clipBelow = Infinity) {
+  const wd = rows[0].length
+  for (let r = 0; r < rows.length; r++) {
+    const y = y0 + r
+    if (y >= clipBelow) break
+    for (let k = 0; k < wd; k++) {
+      const ch = rows[r][flip ? wd - 1 - k : k]
+      if (ch !== '.') c.set(x0 + k, y, pal[ch])
+    }
+  }
+}
+
+function halloween(w: number, h: number): Renderer {
+  const small = h < 12
+  const ground = Math.max(small ? 2 : 3, Math.round(h * 0.3)) // rows of graveyard at the bottom
+  const gy = h - ground // first row of ground
+  const hill = Math.max(1, Math.round(h * 0.08))
+
+  const SKY_TOP: Rgb = [8, 6, 30], SKY_MID: Rgb = [48, 22, 84], HAZE: Rgb = [170, 74, 60]
+  const MOON: Rgb = [255, 232, 170], MOON_DARK: Rgb = [228, 196, 130], MOON_GLOW: Rgb = [255, 170, 90]
+  const CASTLE: Rgb = [6, 2, 10], HILL: Rgb = [10, 6, 14], WINDOW: Rgb = [255, 176, 60], WINDOW_G: Rgb = [130, 255, 120]
+  const GRASS: Rgb = [22, 30, 20], GRASS2: Rgb = [30, 40, 26], DIRT: Rgb = [52, 36, 26]
+  const STONE: Rgb = [112, 112, 124], STONE_D: Rgb = [70, 70, 82], BONE: Rgb = [232, 228, 212], BONE_D: Rgb = [150, 146, 134]
+  const BAT: Rgb = [6, 2, 10], FLASH: Rgb = [214, 210, 250]
+
+  // The castle: a wall with towers along part of the band, standing on a low hill.
+  const cw = Math.max(18, Math.min(Math.round(w * 0.42), 90))
+  const cx0 = Math.round(w * 0.5 - cw * 0.1)
+  const wallTop = Math.round(gy - Math.max(3, h * 0.22))
+  const castleTop = new Int32Array(w).fill(gy)
+  const towers: { x: number; w: number; top: number; roof: boolean }[] = []
+  {
+    let x = cx0
+    for (let i = 0; x < cx0 + cw; i++) {
+      const tw = small ? 3 : 3 + (i % 2) * 2
+      const top = Math.max(small ? 1 : 2, Math.round(wallTop - (h * (0.18 + hash(i, 1, 171) * 0.22))))
+      towers.push({ x, w: tw, top, roof: hash(i, 2, 171) < 0.6 })
+      x += tw + 4 + Math.floor(hash(i, 3, 171) * 6)
+    }
+  }
+  for (let x = cx0; x < Math.min(w, cx0 + cw); x++) castleTop[x] = wallTop + ((x - cx0) % 2 === 0 ? -1 : 0) // battlements
+  for (const t of towers) {
+    for (let x = t.x; x < Math.min(w, t.x + t.w); x++) castleTop[x] = Math.min(castleTop[x], t.top)
+  }
+  // The moon rises behind the castle, so its towers stand out against it.
+  const mr = Math.max(2, Math.round(h * (small ? 0.26 : 0.2)))
+  const tallest = towers.reduce((a, b) => (b.top < a.top ? b : a), towers[0])
+  const mx = Math.min(w - mr - 1, tallest.x + tallest.w + Math.round(mr * 0.6)), my = Math.max(mr, Math.round(wallTop - mr * 0.55))
+
+  // The graveyard: stones, crosses and graves that skeletons climb out of.
+  const stones = Array.from({ length: Math.max(3, Math.round(w / 9)) }, (_, i) => ({
+    x: Math.floor(hash(i, 1, 173) * (w - 3)), cross: hash(i, 2, 173) < 0.3, tall: hash(i, 3, 173) < 0.4,
+  }))
+  // Each grave waits a random 5 to 50 seconds (the first wait 1 to 30, so something happens soon),
+  // then its skeleton climbs out, waves and sinks back. The waits run faster while Claude works.
+  const RISE = 1200, HOLD = 3500, SINK = 1200
+  const firstWait = (i: number) => 1000 + hash(i, 0, 195) * 29000
+  const graves = Array.from({ length: Math.max(2, Math.round(w / 14)) }, (_, i) => ({
+    x: Math.floor((i + 0.5) * (w / Math.max(2, Math.round(w / 14))) + (hash(i, 4, 173) - 0.5) * 6),
+    n: 0, wait: firstWait(i), start: -1, phase: hash(i, 6, 173),
+  }))
+
+  // A skull with dark eye sockets, a ribcage and arms held out; waving, the arms go up.
+  const SKEL = small
+    ? ['ESE', '.S.', 'SSS', 'S.S']
+    : ['.SSSSS.', '.SESES.', '..SSS..', 'S..S..S', '.SSSSS.', '...S...', '..S.S..', '..S.S..']
+  const SKEL_UP = small
+    ? ['ESE', 'SSS', '.S.', 'S.S']
+    : ['S.....S', 'SSSSSSS', '.SESES.', '..SSS..', '..sSs..', '...S...', '..S.S..', '..S.S..']
+  const skelPal: Record<string, Rgb> = { S: BONE, s: BONE_D, E: [20, 10, 20] }
+
+  const bats = Array.from({ length: Math.max(2, Math.round(w / 25)) }, (_, i) => ({
+    y: 1 + hash(i, 1, 175) * Math.max(1, wallTop - 3), speed: 6 + hash(i, 2, 175) * 8, offset: hash(i, 3, 175) * (w + 10), phase: hash(i, 4, 175) * 6,
+  }))
+  let lastT = -1, rush = 0
+
+  return ({ t, energy, flash }) => {
+    const c = new Canvas(w, h)
+    if (t < lastT) graves.forEach((g, i) => { g.n = 0; g.wait = firstWait(i); g.start = -1 }) // time went back: start over
+    const dt = lastT < 0 ? 0 : Math.min(1000, t - lastT)
+    lastT = t
+    rush += (energy - rush) * 0.08
+    const f = pulse(flash)
+    // Lightning now and then, and on a finish.
+    const slot = Math.floor(t / 11000)
+    const strike = hash(slot, 0, 177) < 0.35 + 0.3 * energy ? t - (slot * 11000 + hash(slot, 1, 177) * 9000) : -1
+    const L = Math.max(f, strike >= 0 && strike < 260 ? (strike < 70 ? 1 : strike < 140 ? 0.3 : 0.8) : 0)
+
+    // sky, with a hazy glow low down and a few stars
+    for (let y = 0; y < gy; y++) {
+      const v = y / Math.max(1, gy - 1)
+      const base = v < 0.55 ? lerp(SKY_TOP, SKY_MID, v / 0.55) : lerp(SKY_MID, HAZE, ((v - 0.55) / 0.45) ** 1.3)
+      for (let x = 0; x < w; x++) {
+        c.set(x, y, base)
+        if (y < gy * 0.6 && hash(x, y, 179) < 0.01) c.mix(x, y, [220, 210, 255], 0.6)
+        if (L > 0) c.mix(x, y, FLASH, L * 0.55 * (1 - v * 0.5))
+      }
+    }
+    // the moon and its glow
+    for (let y = Math.max(0, my - mr * 3); y < Math.min(gy, my + mr * 3); y++) {
+      for (let x = Math.max(0, mx - mr * 3); x < Math.min(w, mx + mr * 3); x++) {
+        const d = Math.hypot((x - mx) * 1, (y - my) * 1)
+        if (d <= mr) c.set(x, y, hash(x, y, 181) < 0.12 ? MOON_DARK : MOON)
+        else c.mix(x, y, MOON_GLOW, Math.max(0, 0.28 * (1 - (d - mr) / mr)))
+      }
+    }
+    // bats, flapping across the moonlit sky; more of them while Claude works
+    const nb = bats.length + Math.round(rush * bats.length)
+    for (let i = 0; i < nb; i++) {
+      const b = bats[i % bats.length]
+      const span = w + 10
+      const x = Math.round(((b.offset + (i >= bats.length ? 37 : 0) + (t / 1000) * b.speed * (1 + rush)) % span) - 5)
+      const y = Math.round(b.y + Math.sin(t * 0.004 + b.phase + i) * 1.5)
+      const up = Math.floor(t / 120 + b.phase) % 2 === 0
+      c.set(x, y, BAT)
+      c.set(x - 1, y + (up ? -1 : 0), BAT); c.set(x + 1, y + (up ? -1 : 0), BAT)
+      if (!small) { c.set(x - 2, y + (up ? -1 : 1), BAT); c.set(x + 2, y + (up ? -1 : 1), BAT) }
+    }
+    // the hill and the castle on it
+    for (let x = 0; x < w; x++) {
+      const hy = gy - Math.round(hill * (0.6 + 0.4 * Math.sin(x * 0.05 + 1)))
+      for (let y = hy; y < gy; y++) c.set(x, y, HILL)
+      if (castleTop[x] < gy) for (let y = castleTop[x]; y < gy; y++) c.set(x, y, L > 0.5 ? lerp(CASTLE, [60, 50, 80], L * 0.6) : CASTLE)
+    }
+    for (const tw of towers) {
+      if (tw.roof) { // a pointed roof on top of the tower
+        const mid = tw.x + Math.floor(tw.w / 2)
+        const rh = Math.ceil(tw.w / 2) + 1
+        for (let k = 0; k < rh; k++) for (let x = mid - (rh - 1 - k) + (tw.w % 2 ? 0 : 1) - 1; x <= mid + (rh - 1 - k) - 1 + (tw.w % 2); x++) {
+          if (x >= tw.x - 1 && x <= tw.x + tw.w) c.set(x, tw.top - rh + k, CASTLE)
+        }
+      }
+      // windows that flicker like candles; one burns a ghostly green
+      for (let y = tw.top + 2; y < wallTop; y += small ? 2 : 3) {
+        const x = tw.x + Math.floor(tw.w / 2)
+        const lit = hash(x, y, 183) < 0.55 + 0.35 * rush
+        if (!lit) continue
+        const flick = 0.7 + 0.3 * Math.sin(t * 0.013 + x * 3 + y)
+        c.mix(x, y, hash(x, y, 185) < 0.15 ? WINDOW_G : WINDOW, flick)
+      }
+    }
+    // a faint moonlit edge on the side of each tower facing the moon
+    for (const tw of towers) {
+      const ex = tw.x + tw.w - 1 < mx ? tw.x + tw.w - 1 : tw.x
+      for (let y = tw.top; y < wallTop; y++) c.mix(ex, y, [90, 60, 110], 0.5)
+    }
+    // the gate, lit from inside
+    const gate = cx0 + Math.floor(cw / 2)
+    const gh2 = Math.max(2, Math.round((gy - wallTop) * 0.6))
+    for (let y = gy - gh2; y < gy; y++) for (let x = gate - 1; x <= gate + 1; x++) {
+      if (y === gy - gh2 && x !== gate) continue // a pointed arch
+      c.mix(x, y, WINDOW, 0.55 + 0.25 * Math.sin(t * 0.007))
+    }
+    for (let x = cx0 + 2; x < Math.min(w, cx0 + cw - 1); x += 5) { // windows along the wall
+      const y = wallTop + 2
+      if (y < gy - 1 && hash(x, 7, 187) < 0.5 + 0.3 * rush) c.mix(x, y, WINDOW, 0.6 + 0.3 * Math.sin(t * 0.009 + x))
+    }
+
+    // the graveyard
+    for (let y = gy; y < h; y++) for (let x = 0; x < w; x++) c.set(x, y, y === gy ? GRASS2 : GRASS)
+    for (const st of stones) {
+      const top = gy - (st.tall ? 2 : 1) + (small ? 1 : 0)
+      if (st.cross) {
+        for (let y = top - 1; y < gy + 1; y++) c.set(st.x + 1, y, STONE_D)
+        c.set(st.x, top, STONE_D); c.set(st.x + 2, top, STONE_D)
+      } else {
+        for (let y = top; y < gy + 1; y++) for (let x = st.x; x < st.x + 3; x++) c.set(x, y, (x === st.x + 2) ? STONE_D : STONE)
+        c.set(st.x, top, lerp(STONE, GRASS, 0.6)); c.set(st.x + 2, top, lerp(STONE_D, GRASS, 0.6)) // rounded top
+      }
+    }
+    // skeletons climbing out, waving, then sinking back; more often while Claude works, all at once on a finish
+    const feet = h - 1
+    graves.forEach((g, i) => {
+      if (g.start >= 0 && t - g.start > RISE + HOLD + SINK) { g.start = -1; g.n++; g.wait = 5000 + hash(i, g.n, 195) * 45000 }
+      if (g.start < 0) {
+        g.wait -= dt * (1 + 1.5 * rush)
+        if (g.wait <= 0) g.start = t
+      }
+      const age = g.start < 0 ? -1 : t - g.start
+      let rise = age < 0 ? 0 : age < RISE ? age / RISE : age < RISE + HOLD ? 1 : 1 - (age - RISE - HOLD) / SINK
+      if (f > 0) rise = Math.max(rise, Math.min(1, f * 1.6))
+      // the open grave
+      for (let x = g.x - 1; x <= g.x + (small ? 3 : 7); x++) c.set(x, feet, DIRT)
+      if (rise <= 0) return
+      const waving = rise >= 1 && Math.floor(t / 400 + g.phase * 10) % 2 === 0
+      const rows = waving ? SKEL_UP : SKEL
+      const shown = Math.round(rise * rows.length)
+      sprite(c, rows, g.x, feet + 1 - shown, skelPal, false, feet + 1)
+      if (rise < 1) for (let k = 0; k < 2; k++) c.set(g.x + Math.floor(hash(g.x, Math.floor(t / 90) + k, 191) * (small ? 3 : 7)), feet, [90, 64, 44]) // dirt flying
+    })
     return c.pack()
   }
 }

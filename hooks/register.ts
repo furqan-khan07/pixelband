@@ -76,7 +76,7 @@ const RECENT_DIRS = ['Downloads', 'Desktop', 'Pictures']
 const CREATION_LIFT_256 = 1.25
 
 /** Where each scene's slim strip looks, as a fraction of its height: windows over the street, the planet... */
-const SLIM_FOCUS: Record<SceneName, number> = { city: 0.66, space: 0.58, aurora: 0.5, fire: 0.7, creation: 0.5, matrix: 0.5, aquarium: 0.55 }
+const SLIM_FOCUS: Record<SceneName, number> = { city: 0.66, space: 0.58, aurora: 0.5, fire: 0.7, creation: 0.5, matrix: 0.5, aquarium: 0.55, halloween: 0.82 }
 
 export const SCENE_LABELS: Record<SceneName, string> = {
   city: 'rain on a city at night',
@@ -86,6 +86,7 @@ export const SCENE_LABELS: Record<SceneName, string> = {
   creation: "Michelangelo's hands and a spark",
   matrix: 'green code rain',
   aquarium: 'fish, bubbles and weed',
+  halloween: 'skeletons rising from a graveyard by a haunted castle',
 }
 
 /** Pixels across for a band `cols` cells wide. */
