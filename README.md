@@ -34,6 +34,9 @@ Run `/reload-plugins` if a session was already open. It works in the `claude` co
 terminal (including VS Code's, Cursor's and JetBrains' built-in terminals) and in the Code tab of
 the Claude desktop app.
 
+New scenes and fixes come out regularly, so it's worth turning on auto-update right after you
+install (see [Updating](#updating)).
+
 Then, inside Claude Code, type `/pixelband` to open the menu. Pick a scene, or drag an image into
 the menu's image field (your newest downloads and screenshots are listed there too), and choose a
 style, size and crop. Every change shows in the band straight away, and **Undo changes** puts it
@@ -50,6 +53,24 @@ Or skip the menu:
 ```
 
 Once mods ship properly, the flag won't be needed.
+
+## Updating
+
+New scenes, settings and fixes ship as new versions. Claude Code only updates plugins from
+third-party marketplaces like this one when you ask it to, so turn on auto-update to get them
+without thinking about it:
+
+1. In a Claude Code session, run `/plugin` and open the **Marketplaces** tab.
+2. Select **pixelband** and choose **Enable auto-update**.
+
+Claude Code then checks for a new version when a session starts, and the next session loads it.
+
+To update by hand instead, run these from your shell, then `/reload-plugins` in any open session:
+
+```bash
+claude plugin marketplace update pixelband
+claude plugin update pixelband@pixelband
+```
 
 ## Commands
 
