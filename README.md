@@ -65,6 +65,7 @@ Once mods ship properly, the flag won't be needed.
 | `/pixelband layout <auto\|banner\|fit>` | `banner` fills the whole width with a crop; `fit` shows the whole image, centred. `auto` picks `fit` for logos and sprites with see-through backgrounds |
 | `/pixelband size <rows\|auto>` | how tall the band is, 2 to 24 rows (two pixels per row). `auto`, the default, is about a quarter of the terminal |
 | `/pixelband working <slim\|hide\|full>` | what the band does while Claude works: shrink to a 3-row strip (the default), hide, or stay full size |
+| `/pixelband idle <full\|slim\|hide>` | what it does while Claude is idle: full size (the default), a 3-row strip, or hidden until Claude starts working |
 | `/pixelband colors <n>` | palette size for the `original` style, 2 to 32. Fewer colours reads more like pixel art |
 | `/pixelband pixels <standard\|fine>` | `fine` puts four pixels in each character instead of two: sharper, and the right shape if pixels look wide (fonts with tight line spacing, like some macOS Terminal profiles). Saved per terminal app, since it depends on the font |
 | `/pixelband colormode <auto\|full\|256>` | full colour, or the 256 colours older terminals show; `auto` detects macOS Terminal |
@@ -77,8 +78,9 @@ Once mods ship properly, the flag won't be needed.
 
 While Claude is working, the band slides down to a slim 3-row strip so the output gets the room,
 and it grows back when the turn finishes. The effects still play in the strip. `/pixelband working
-hide` hides it during turns instead, and `/pixelband working full` keeps it full size. Claude Code
-also lets you collapse the band any time with its `[-]` mark or ctrl+x ctrl+a.
+hide` hides it during turns instead, and `/pixelband working full` keeps it full size. To keep it
+out of the way while you type instead, `/pixelband idle hide` hides it until Claude starts working.
+Claude Code also lets you collapse the band any time with its `[-]` mark or ctrl+x ctrl+a.
 
 ## Scenes
 

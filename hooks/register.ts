@@ -41,7 +41,7 @@ type ColorMode = 'auto' | 'full' | '256'
 /** standard: two pixels per cell (half blocks). fine: four (quadrants), for nearly square cells. */
 type Pixels = 'standard' | 'fine'
 /** `rows` 0 means auto: about a quarter of the terminal. */
-interface Config { rows: number; colors: number; enabled: boolean; style: Style; layout: Layout; animate: boolean; whileWorking: WhileWorking; colorMode: ColorMode
+interface Config { rows: number; colors: number; enabled: boolean; style: Style; layout: Layout; animate: boolean; whileWorking: WhileWorking; whileIdle: WhileWorking; colorMode: ColorMode
   /** Pixels per character, per terminal app: the right choice depends on that terminal's font. */
   pixelsFor: Record<string, Pixels> }
 /**
@@ -54,7 +54,7 @@ type Source =
   | { kind: 'image'; image: Rgba; name: string; clear: number; anim?: Anim }
   | { kind: 'scene'; scene: SceneName }
 
-const DEFAULTS: Config = { rows: 0, colors: 16, enabled: true, style: 'original', layout: 'auto', animate: true, whileWorking: 'slim', colorMode: 'auto', pixelsFor: {} }
+const DEFAULTS: Config = { rows: 0, colors: 16, enabled: true, style: 'original', layout: 'auto', animate: true, whileWorking: 'slim', whileIdle: 'full', colorMode: 'auto', pixelsFor: {} }
 /** How tall the band gets while Claude works, in 'slim' mode: out of the way, still animating. */
 const SLIM_ROWS = 3
 /** Rows the band grows or shrinks by per frame when it changes height. */
@@ -162,6 +162,8 @@ export const register: Register = (on) => {
   const pixelsNow = (): Pixels => (inTerminal() ? config.pixelsFor?.[terminal] ?? 'standard' : 'standard')
   const use256 = () => inTerminal() && (config.colorMode === '256' || (config.colorMode === 'auto' && only256))
   let shownRows = -1
+  /** Whether the menu pane is open (see menuPauses). */
+  let menuOpen = false
   /** The frame counter the desktop band subscribes to (see Host.bump). */
   let frameNo = 0
 
@@ -214,6 +216,11 @@ export const register: Register = (on) => {
   }
 
   const redraw = () => { try { host?.invalidate() } catch { /* not mounted yet */ } }
+  /** Redraw the band alone where Claude Code can (the desktop app), so an open menu isn't rebuilt. */
+  const redrawBand = () => {
+    if (inTerminal() || !host) return redraw()
+    Promise.resolve(host.bump()).catch(() => redraw())
+  }
 
   const layoutOf = (): 'banner' | 'fit' => {
     if (config.layout !== 'auto') return config.layout
@@ -318,12 +325,12 @@ export const register: Register = (on) => {
   /** The band's full height for the current terminal. */
   const fullRows = () => (limits ? Math.min(config.rows || autoRows(limits.maxRows), limits.maxRows, Math.floor(MAX_CELLS / limits.cols)) : 0)
 
-  /** Rows the band wants: its full height, or slim/hidden while Claude works. */
+  /** Rows the band wants: full, slim or hidden, by the setting for working or for idle. */
   function targetRows(): number {
     if (!limits) return 0
     const full = fullRows()
-    if (!working || config.whileWorking === 'full') return full
-    return config.whileWorking === 'hide' ? 0 : Math.min(SLIM_ROWS, full)
+    const mode = working ? config.whileWorking : config.whileIdle
+    return mode === 'full' ? full : mode === 'hide' ? 0 : Math.min(SLIM_ROWS, full)
   }
 
   const resizing = () => limits !== null && config.enabled && shownRows !== targetRows()
@@ -337,9 +344,17 @@ export const register: Register = (on) => {
   // One-shot effects (at most 1.4 s) always run out, so they end right; the ongoing ones (the
   // working sweep, scenes, GIFs) only run while there's a band to show them.
   const animating = () =>
-    isOneShot(mood) || (mood === 'working' && visible()) || resizing() || (moving() && config.animate && visible())
+    !menuPauses() &&
+    (isOneShot(mood) || (mood === 'working' && visible()) || resizing() || (moving() && config.animate && visible()))
 
   function stopTimer() { timer?.cancel(); timer = null }
+
+  /**
+   * In the desktop app the band stands still while the menu is open: redrawing it every frame made
+   * the menu's dropdowns flicker. Height changes then land in one step, and changes made in the menu
+   * still show as a still frame.
+   */
+  const menuPauses = () => menuOpen && !inTerminal()
 
   function syncTimer() {
     if (!animating()) stopTimer()
@@ -351,7 +366,7 @@ export const register: Register = (on) => {
     if (resizing()) {
       const target = targetRows()
       shownRows = shownRows < target ? Math.min(target, shownRows + ROW_STEP) : Math.max(target, shownRows - ROW_STEP)
-      redraw() // a new height needs a real render, not a blit
+      redrawBand() // a new height needs a real render, not a blit
     }
     if (source?.kind === 'scene' && config.animate) {
       sceneT += FRAME_MS
@@ -491,6 +506,13 @@ export const register: Register = (on) => {
       : mode === 'hide' ? 'while Claude works the band hides, then comes back.' : 'the band stays full size while Claude works.'
   }
 
+  async function setWhileIdle(mode: string): Promise<string> {
+    if (!['slim', 'full', 'hide'].includes(mode)) return 'Usage: /pixelband idle full|slim|hide'
+    config.whileIdle = mode as WhileWorking; await save()
+    return mode === 'hide' ? 'the band hides while Claude is idle and shows up when it starts working.'
+      : mode === 'slim' ? `the band stays a ${SLIM_ROWS}-row strip while Claude is idle.` : 'the band is full size while Claude is idle.'
+  }
+
   async function setColors(n: number): Promise<string> {
     config.colors = clampInt(n, 2, 32); await save()
     return `${config.colors}-colour palette.`
@@ -550,6 +572,8 @@ export const register: Register = (on) => {
     snapshot = { config: { ...config }, slots }
     note = ''
     await host.open()
+    menuOpen = true
+    syncTimer()
     findRecent().catch(() => { /* recent images are a nicety */ })
     // The keyboard only goes to a pane when Claude Code can spare it; ask once more a moment later.
     host.after(250, () => {
@@ -674,6 +698,14 @@ export const register: Register = (on) => {
     return h(Box, { flexDirection: 'row' }, h(Raster, { key: KEY, columns: band.columns, rows: band.rows, cells })) as RenderElement
   })
 
+  on('ui.close', ($, e, next) => {
+    if ((e as any).id === MENU) {
+      menuOpen = false
+      syncTimer()
+    }
+    return next(e)
+  })
+
   on('ui.render', { component: 'Pane', requestId: MENU }, ($, e, next) => {
     const { Box, Text, Button, Input, Link } = $.ui.resolve(e) as any
     const ui = $.ui.resolve(e) as any
@@ -736,6 +768,15 @@ export const register: Register = (on) => {
         onSelect: (v: string) => act(() => setWhileWorking(v))(),
       }),
       select({
+        key: 'idle', label: 'Idle     ', value: config.whileIdle,
+        options: [
+          { value: 'full', label: 'full size while Claude is idle' },
+          { value: 'slim', label: `a ${SLIM_ROWS}-row strip while idle` },
+          { value: 'hide', label: 'hide while idle, show while Claude works' },
+        ],
+        onSelect: (v: string) => act(() => setWhileIdle(v))(),
+      }),
+      select({
         key: 'pixels', label: 'Pixels   ', value: pixelsNow(),
         options: [
           { value: 'standard', label: 'standard: 2 per character (most terminals)' },
@@ -775,7 +816,7 @@ export const register: Register = (on) => {
         })
         : null,
       row(
-        h(Button, { key: 'done', variant: 'primary', role: 'dismiss', label: 'Done', onPress: () => { Promise.resolve(host?.close()).catch(() => {}) } }),
+        h(Button, { key: 'done', variant: 'primary', role: 'dismiss', label: 'Done', onPress: () => { menuOpen = false; syncTimer(); Promise.resolve(host?.close()).catch(() => {}) } }),
         h(Button, { key: 'toggle', label: config.enabled ? 'Hide band' : 'Show band', onPress: act(() => setEnabled(!config.enabled)) }),
         h(Button, { key: 'revert', label: 'Undo changes', onPress: act(revert) }),
       ),
@@ -808,6 +849,8 @@ export const register: Register = (on) => {
       }
       case 'working':
         return reply(await setWhileWorking(arg.toLowerCase()))
+      case 'idle':
+        return reply(await setWhileIdle(arg.toLowerCase()))
       case 'pixels':
         return reply(await setPixels(arg.toLowerCase()))
       case 'colormode':
@@ -858,7 +901,7 @@ export const register: Register = (on) => {
         const where = scope === 'project' ? 'this project' : 'global'
         const status = !source ? 'nothing showing yet'
           : `showing ${source.kind === 'scene' ? `the ${source.scene} scene` : source.name} (${where})${source.kind === 'image' ? `, ${layoutOf()}${source.anim ? `, ${source.anim.frames.length} frames` : ''}` : ''}, ${config.style}, ${config.rows ? `${config.rows} rows` : 'auto height'}${use256() ? ', 256 colours' : ''}, ${config.enabled ? 'on' : 'off'}`
-        return reply(`${status}.\n/pixelband opens the menu. Or: set <image> [--here] · scene <${SCENES.join('|')}> · style <${STYLES.join('|')}> · layout <banner|fit|auto> · move <up|down|left|right> · zoom <in|out|reset> · size <rows|auto> · working <slim|full|hide> · colormode <auto|full|256> · pixels <standard|fine> · colors <n> · animate <on|off> · on · off · clear [--here] · demo <working|done|error|intro>`)
+        return reply(`${status}.\n/pixelband opens the menu. Or: set <image> [--here] · scene <${SCENES.join('|')}> · style <${STYLES.join('|')}> · layout <banner|fit|auto> · move <up|down|left|right> · zoom <in|out|reset> · size <rows|auto> · working <slim|full|hide> · idle <full|slim|hide> · colormode <auto|full|256> · pixels <standard|fine> · colors <n> · animate <on|off> · on · off · clear [--here] · demo <working|done|error|intro>`)
       }
       default:
         return reply(`unknown command "${sub}". /pixelband help lists them, or /pixelband alone opens the menu.`)

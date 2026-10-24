@@ -510,6 +510,73 @@ describe('height', () => {
   })
 })
 
+describe('idle and the menu', () => {
+  const tall = (isWorking = false) => ({ ...band(isWorking, 29) })
+  const rowsOf = async (ui: any) => (await ui.find({ key: 'art' }))?.props.rows
+
+  test('idle hide keeps the band away until Claude works, then hides it again', async ($, on) => {
+    const w = world(on, { '/photo.png': IMAGES.rgb8.png! })
+    await $.session.start(SESSION)
+    await $.command.run(pix('set /photo.png'))
+    expect(await text($.command.run(pix('idle hide')))).toMatch(/hides while Claude is idle/)
+    expect(await text($.command.run(pix('working full')))).toMatch(/stays full size/)
+    const ui = await $.ui.mount(tall())
+    expect(await ui.find({ key: 'art' })).toBeUndefined()
+    await $.turn.start({ prompt: 'hi', turnId: 't1' } as any)
+    await w.clock.advance(1000)
+    await ui.redraw(tall(true).props)
+    expect(await rowsOf(ui)).toBe(8)
+    await $.turn.complete(complete('answer') as any)
+    await w.clock.advance(2000)
+    await ui.redraw(tall(false).props)
+    expect(await ui.find({ key: 'art' })).toBeUndefined()
+    await ui.unmount()
+  })
+
+  test('idle slim keeps a strip while idle; a bad mode gets the usage', async ($, on) => {
+    world(on, { '/photo.png': IMAGES.rgb8.png! })
+    await $.session.start(SESSION)
+    await $.command.run(pix('set /photo.png'))
+    expect(await text($.command.run(pix('idle slim')))).toMatch(/3-row strip/)
+    const ui = await $.ui.mount(tall())
+    expect(await rowsOf(ui)).toBe(3)
+    expect(await text($.command.run(pix('idle sideways')))).toMatch(/^Usage: \/pixelband idle/)
+    await ui.unmount()
+  })
+
+  test('the menu has an idle setting', async ($, on) => {
+    world(on)
+    await $.session.start(SESSION)
+    await $.command.run(pix(''))
+    const menu = await $.ui.mount(PANE)
+    const idle = await menu.find({ key: 'idle' })
+    expect(idle?.props.value).toBe('full')
+    await menu.select({ key: 'idle', value: 'hide' })
+    await settle()
+    await menu.redraw()
+    expect((await menu.find({ key: 'idle' }))?.props.value).toBe('hide')
+  })
+
+  test('in the desktop app the band holds still while the menu is open', async ($, on) => {
+    const w = world(on)
+    await $.session.start({ ...SESSION, surface: 'desktop' })
+    await $.command.run(pix('scene city'))
+    const ui = await $.ui.mount(desktopBand())
+    await w.clock.advance(500)
+    expect(w.bumps.length).toBeGreaterThan(0)
+    await $.command.run(pix(''))
+    const menu = await $.ui.mount({ ...PANE, surface: 'desktop' } as any)
+    const before = w.bumps.length
+    await w.clock.advance(1000)
+    expect(w.bumps.length).toBe(before)      // no frames while a dropdown might be open
+    await menu.press({ key: 'done' })
+    await settle()
+    await w.clock.advance(500)
+    expect(w.bumps.length).toBeGreaterThan(before)
+    await ui.unmount()
+  })
+})
+
 describe('256 colours', () => {
   const XTERM = new Set<number>()
   for (const r of [0, 95, 135, 175, 215, 255]) for (const g of [0, 95, 135, 175, 215, 255]) for (const b of [0, 95, 135, 175, 215, 255]) XTERM.add((r << 16) | (g << 8) | b)
