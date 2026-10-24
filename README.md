@@ -1,5 +1,7 @@
 # pixelband
 
+[![Listed on statuslin.es](https://img.shields.io/badge/listed%20on-statuslin.es-c96442)](https://statuslin.es/mods/pixelband)
+
 **Pixel art above your Claude Code prompt that reacts while Claude works: your own image, or an animated scene.**
 
 ![pixelband: animated pixel-art scenes above the prompt. A spark between Michelangelo's two hands blazes while Claude works and floods out in a ring of light when it finishes; rain on a city gets heavier and lightning strikes; stars go to warp speed; the aurora brightens; the fire climbs](docs/demo.gif)
